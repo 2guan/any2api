@@ -1,0 +1,13 @@
+{
+  "name": "any2api-2",
+  "private": true,
+  "packageManager": "npm@11.11.0",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "npm run dev --workspace=@any2api/api",
+    "dev:admin": "npm run dev --workspace=@any2api/admin",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}
