@@ -75,7 +75,7 @@ db.exec(`
     public_model TEXT NOT NULL UNIQUE,
     model_id TEXT NOT NULL REFERENCES models(id),
     enabled INTEGER NOT NULL DEFAULT 1,
-    priority INTEGER NOT NULL DEFAULT 50,
+    priority INTEGER NOT NULL DEFAULT 20,
     created_at INTEGER NOT NULL
   ) STRICT;
   CREATE TABLE IF NOT EXISTS request_logs (

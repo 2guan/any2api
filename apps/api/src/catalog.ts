@@ -110,14 +110,14 @@ export function modelList() {
 
 export function catalog() {
   return (db.prepare(`SELECT r.public_model AS id, r.enabled AS route_enabled, r.priority, m.provider, m.upstream_id, m.enabled AS model_enabled, m.capabilities_json
-    FROM routes r JOIN models m ON m.id = r.model_id ORDER BY m.provider, r.priority DESC, r.public_model`).all() as Array<{ id: string; route_enabled: number; priority: number; provider: string; upstream_id: string; model_enabled: number; capabilities_json: string }>)
+    FROM routes r JOIN models m ON m.id = r.model_id ORDER BY r.enabled DESC, r.priority DESC, r.public_model ASC`).all() as Array<{ id: string; route_enabled: number; priority: number; provider: string; upstream_id: string; model_enabled: number; capabilities_json: string }>)
     .map((model) => ({ ...model, capabilities: JSON.parse(model.capabilities_json) }));
 }
 
 export function seedWebDefaults() {
   const insertModel = db.prepare(`INSERT INTO models (id, provider, upstream_id, capabilities_json, discovered_at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(provider, upstream_id) DO UPDATE SET capabilities_json = excluded.capabilities_json`);
-  const insertRoute = db.prepare(`INSERT OR IGNORE INTO routes (id, public_model, model_id, created_at) VALUES (?, ?, ?, ?)`);
+  const insertRoute = db.prepare(`INSERT OR IGNORE INTO routes (id, public_model, model_id, priority, created_at) VALUES (?, ?, ?, 20, ?)`);
   const now = Date.now();
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -136,6 +136,6 @@ export function upsertDiscoveredModel(provider: string, upstreamId: string, capa
   db.prepare(`INSERT INTO models (id, provider, upstream_id, capabilities_json, discovered_at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(provider, upstream_id) DO UPDATE SET capabilities_json = excluded.capabilities_json, discovered_at = excluded.discovered_at`)
     .run(modelId, provider, upstreamId, JSON.stringify(capabilities), now);
-  db.prepare(`INSERT INTO routes (id, public_model, model_id, created_at) VALUES (?, ?, ?, ?)
+  db.prepare(`INSERT INTO routes (id, public_model, model_id, priority, created_at) VALUES (?, ?, ?, 20, ?)
     ON CONFLICT(public_model) DO UPDATE SET model_id = excluded.model_id`).run(id('rte'), publicModel, modelId, now);
 }

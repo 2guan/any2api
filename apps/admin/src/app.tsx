@@ -385,22 +385,274 @@ function RoutesPage() {
   const [publicModel, setPublicModel] = useState('');
   const [provider, setProvider] = useState('chatgpt');
   const [upstreamModel, setUpstreamModel] = useState('');
-  const [priority, setPriority] = useState('50');
+  const [priority, setPriority] = useState('20');
   const [enabled, setEnabled] = useState('true');
   const [error, setError] = useState('');
-  const load = () => api<RouteItem[]>('/api/routes').then(setItems);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dragPosition, setDragPosition] = useState<'top' | 'bottom' | null>(null);
+
+  const load = () => api<RouteItem[]>('/api/routes').then((data) => {
+    const sorted = [...data].sort((a, b) => {
+      if (a.enabled !== b.enabled) return b.enabled - a.enabled;
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return a.public_model.localeCompare(b.public_model);
+    });
+    setItems(sorted);
+  });
+
   useEffect(() => { void load(); }, []);
-  function reset() { setEditing(null); setPublicModel(''); setProvider('chatgpt'); setUpstreamModel(''); setPriority('50'); setEnabled('true'); setError(''); }
-  function openEdit(item: RouteItem) { setEditing(item); setPublicModel(item.public_model); setProvider(item.provider); setUpstreamModel(item.upstream_id); setPriority(String(item.priority)); setEnabled(item.enabled ? 'true' : 'false'); setError(''); setOpen(true); }
-  async function save() {
-    if (!publicModel.trim() || !upstreamModel.trim()) { setError('请填写公开模型名和上游模型名。'); return; }
-    try {
-      const body = { publicModel: publicModel.trim(), provider, upstreamModel: upstreamModel.trim(), priority: Number(priority) || 50, enabled: enabled === 'true' };
-      await api(editing ? '/api/routes/' + editing.id : '/api/routes', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(body) });
-      setOpen(false); reset(); void load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '保存路由失败'); }
+
+  function reset() {
+    setEditing(null);
+    setPublicModel('');
+    setProvider('chatgpt');
+    setUpstreamModel('');
+    setPriority('20');
+    setEnabled('true');
+    setError('');
   }
-  return <section className="module-page"><div className="section-title"><div><Text className="eyebrow">模型编排</Text><h1>模型路由</h1><p>已预置各官网网页端模型；通过路由统一控制公开模型名、上游模型和优先级。</p></div><Button appearance="primary" icon={<Add24Regular />} onClick={() => { reset(); setOpen(true); }}>新增路由</Button></div><Card className="table-card"><div className="data-table route-table"><div className="data-head"><span>公开模型</span><span>渠道</span><span>上游模型</span><span>能力</span><span>优先级</span><span>状态</span><span>操作</span></div>{items.map((item) => <div className="data-row" key={item.id}><code>{item.public_model}</code><span>{labelFor(providerLabels, item.provider)}</span><span>{item.upstream_id}</span><ModelTags raw={item.capabilities_json} /><span>{item.priority}</span><Badge appearance="tint" color={item.enabled ? 'success' : 'warning'}>{item.enabled ? '已启用' : '已停用'}</Badge><Button appearance="subtle" onClick={() => openEdit(item)}>编辑</Button></div>)}</div></Card><Dialog open={open} onOpenChange={(_, data) => { if (!data.open) { setOpen(false); reset(); } }}><DialogSurface className="compact-dialog"><DialogBody><DialogTitle>{editing ? '编辑模型路由' : '新增模型路由'}</DialogTitle><DialogContent><p className="dialog-intro">公开模型名用于 OpenAI 兼容调用，上游模型名对应实际渠道模型。</p><div className="dialog-grid route-dialog-grid"><Field label="公开模型名" required><Input value={publicModel} onChange={(_, data) => setPublicModel(data.value)} placeholder="例如：team-reasoning" autoFocus /></Field><Field label="渠道" required><Select value={provider} onChange={(_, data) => setProvider(data.value)}>{providerGuides.map((guide) => <option key={guide.id} value={guide.id}>{guide.name}</option>)}</Select></Field><Field label="上游模型名" required><Input value={upstreamModel} onChange={(_, data) => setUpstreamModel(data.value)} placeholder="例如：gpt-5.4-thinking" /></Field><Field label="优先级"><Input type="number" min="0" max="100" value={priority} onChange={(_, data) => setPriority(data.value)} /></Field><Field label="状态"><Select value={enabled} onChange={(_, data) => setEnabled(data.value)}><option value="true">已启用</option><option value="false">已停用</option></Select></Field></div>{error ? <Text className="form-error">{error}</Text> : null}</DialogContent><DialogActions><Button appearance="secondary" onClick={() => { setOpen(false); reset(); }}>取消</Button><Button appearance="primary" onClick={() => void save()}>保存路由</Button></DialogActions></DialogBody></DialogSurface></Dialog></section>;
+
+  function openEdit(item: RouteItem) {
+    setEditing(item);
+    setPublicModel(item.public_model);
+    setProvider(item.provider);
+    setUpstreamModel(item.upstream_id);
+    setPriority(String(item.priority));
+    setEnabled(item.enabled ? 'true' : 'false');
+    setError('');
+    setOpen(true);
+  }
+
+  async function save() {
+    if (!publicModel.trim() || !upstreamModel.trim()) {
+      setError('请填写公开模型名和上游模型名。');
+      return;
+    }
+    try {
+      const body = {
+        publicModel: publicModel.trim(),
+        provider,
+        upstreamModel: upstreamModel.trim(),
+        priority: Number(priority) || 20,
+        enabled: enabled === 'true'
+      };
+      await api(editing ? '/api/routes/' + editing.id : '/api/routes', {
+        method: editing ? 'PATCH' : 'POST',
+        body: JSON.stringify(body)
+      });
+      setOpen(false);
+      reset();
+      void load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '保存路由失败');
+    }
+  }
+
+  async function toggleStatus(item: RouteItem) {
+    const nextEnabled = item.enabled ? 0 : 1;
+    try {
+      await api('/api/routes/' + item.id, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: nextEnabled === 1 })
+      });
+      void load();
+    } catch (reason) {
+      alert(reason instanceof Error ? reason.message : '更新状态失败');
+    }
+  }
+
+  async function handleDrop(targetId: string) {
+    if (!draggingId || draggingId === targetId) {
+      setDraggingId(null);
+      setDragOverId(null);
+      setDragPosition(null);
+      return;
+    }
+
+    const sourceIdx = items.findIndex((r) => r.id === draggingId);
+    const targetIdx = items.findIndex((r) => r.id === targetId);
+    if (sourceIdx === -1 || targetIdx === -1) return;
+
+    const list = [...items];
+    const [moved] = list.splice(sourceIdx, 1);
+    const insertIdx = dragPosition === 'bottom' ? targetIdx + (sourceIdx < targetIdx ? 0 : 1) : targetIdx - (sourceIdx < targetIdx ? 1 : 0);
+    list.splice(Math.max(0, Math.min(list.length, insertIdx)), 0, moved);
+
+    // Rule: Enabled items first, Disabled items at bottom
+    const enabledItems = list.filter((r) => r.enabled === 1);
+    const disabledItems = list.filter((r) => r.enabled !== 1);
+
+    // Reassign descending priorities for enabled items
+    const basePriority = Math.max(100, enabledItems.length * 10);
+    const updatedEnabled = enabledItems.map((r, idx) => ({
+      ...r,
+      priority: Math.max(1, basePriority - idx * 5)
+    }));
+    const updatedDisabled = disabledItems.map((r, idx) => ({
+      ...r,
+      priority: Math.max(0, 20 - idx)
+    }));
+
+    const nextItems = [...updatedEnabled, ...updatedDisabled];
+    setItems(nextItems);
+    setDraggingId(null);
+    setDragOverId(null);
+    setDragPosition(null);
+
+    try {
+      await api('/api/routes/reorder', {
+        method: 'PUT',
+        body: JSON.stringify({
+          routes: nextItems.map((r) => ({ id: r.id, priority: r.priority }))
+        })
+      });
+    } catch (reason) {
+      console.error('Failed to persist reorder', reason);
+      void load();
+    }
+  }
+
+  return (
+    <section className="module-page">
+      <div className="section-title">
+        <div>
+          <Text className="eyebrow">模型编排</Text>
+          <h1>模型路由</h1>
+          <p>按住左侧图标可直接拖拽调整顺序；停用模型将自动置于列表底部；默认排序序号为 20。</p>
+        </div>
+        <Button appearance="primary" icon={<Add24Regular />} onClick={() => { reset(); setOpen(true); }}>
+          新增路由
+        </Button>
+      </div>
+      <Card className="table-card">
+        <div className="data-table route-table">
+          <div className="data-head">
+            <span style={{ textAlign: 'center' }}>排序</span>
+            <span>公开模型</span>
+            <span>渠道</span>
+            <span>上游模型</span>
+            <span>能力</span>
+            <span>优先级</span>
+            <span>状态</span>
+            <span>操作</span>
+          </div>
+          {items.map((item) => {
+            const isDragging = draggingId === item.id;
+            const isOver = dragOverId === item.id;
+            const rowClass = [
+              'data-row',
+              'route-row',
+              item.enabled ? '' : 'is-disabled',
+              isDragging ? 'dragging' : '',
+              isOver && dragPosition === 'top' ? 'drag-over-top' : '',
+              isOver && dragPosition === 'bottom' ? 'drag-over-bottom' : ''
+            ].filter(Boolean).join(' ');
+
+            return (
+              <div
+                className={rowClass}
+                key={item.id}
+                draggable
+                onDragStart={(e) => {
+                  setDraggingId(item.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('text/plain', item.id);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dragOverId !== item.id) setDragOverId(item.id);
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const mid = rect.top + rect.height / 2;
+                  const pos = e.clientY < mid ? 'top' : 'bottom';
+                  if (dragPosition !== pos) setDragPosition(pos);
+                }}
+                onDragLeave={() => {
+                  if (dragOverId === item.id) {
+                    setDragOverId(null);
+                    setDragPosition(null);
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  void handleDrop(item.id);
+                }}
+                onDragEnd={() => {
+                  setDraggingId(null);
+                  setDragOverId(null);
+                  setDragPosition(null);
+                }}
+              >
+                <span className="drag-handle-cell">
+                  <span className="drag-handle" title="按住拖拽调整顺序">⋮⋮</span>
+                </span>
+                <code>{item.public_model}</code>
+                <span>{labelFor(providerLabels, item.provider)}</span>
+                <span>{item.upstream_id}</span>
+                <ModelTags raw={item.capabilities_json} />
+                <span>{item.priority}</span>
+                <Badge
+                  appearance="tint"
+                  color={item.enabled ? 'success' : 'warning'}
+                  style={{ cursor: 'pointer' }}
+                  title="点击切换启用/停用"
+                  onClick={() => void toggleStatus(item)}
+                >
+                  {item.enabled ? '已启用' : '已停用'}
+                </Badge>
+                <div className="row-actions">
+                  <Button appearance="subtle" onClick={() => openEdit(item)}>编辑</Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+      <Dialog
+        open={open}
+        onOpenChange={(_, data) => {
+          if (!data.open) { setOpen(false); reset(); }
+        }}
+      >
+        <DialogSurface className="compact-dialog">
+          <DialogBody>
+            <DialogTitle>{editing ? '编辑模型路由' : '新增模型路由'}</DialogTitle>
+            <DialogContent>
+              <p className="dialog-intro">公开模型名用于 OpenAI 兼容调用，上游模型名对应实际渠道模型。默认排序序号为 20。</p>
+              <div className="dialog-grid route-dialog-grid">
+                <Field label="公开模型名" required>
+                  <Input value={publicModel} onChange={(_, data) => setPublicModel(data.value)} placeholder="例如：team-reasoning" autoFocus />
+                </Field>
+                <Field label="渠道" required>
+                  <Select value={provider} onChange={(_, data) => setProvider(data.value)}>
+                    {providerGuides.map((guide) => <option key={guide.id} value={guide.id}>{guide.name}</option>)}
+                  </Select>
+                </Field>
+                <Field label="上游模型名" required>
+                  <Input value={upstreamModel} onChange={(_, data) => setUpstreamModel(data.value)} placeholder="例如：gpt-5.4-thinking" />
+                </Field>
+                <Field label="优先级 (序号)">
+                  <Input type="number" min="0" max="10000" value={priority} onChange={(_, data) => setPriority(data.value)} />
+                </Field>
+                <Field label="状态">
+                  <Select value={enabled} onChange={(_, data) => setEnabled(data.value)}>
+                    <option value="true">已启用</option>
+                    <option value="false">已停用 (自动置于底部)</option>
+                  </Select>
+                </Field>
+              </div>
+              {error ? <Text className="form-error">{error}</Text> : null}
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="secondary" onClick={() => { setOpen(false); reset(); }}>取消</Button>
+              <Button appearance="primary" onClick={() => void save()}>保存路由</Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+    </section>
+  );
 }
 
 
