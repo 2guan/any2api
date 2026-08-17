@@ -23,6 +23,7 @@ import { registerImageRoutes } from './routes/images.js';
 import { registerMessagesRoutes } from './routes/messages.js';
 import { registerEditableFilesRoutes } from './routes/editable_files.js';
 import { registerOAuthRoutes } from './routes/oauth.js';
+import { estimateTokens } from './tokens.js';
 
 seedWebDefaults();
 
@@ -46,6 +47,7 @@ const chatRequest = z.object({
   model: z.string().min(1),
   messages: z.array(z.object({ role: z.string(), content: z.any() })).min(1),
   stream: z.boolean().default(true),
+  stream_options: z.object({ include_usage: z.boolean().optional() }).optional(),
   reasoning: z.object({ effort: z.string().optional() }).optional(),
   web_search: z.boolean().optional()
 });
@@ -122,16 +124,20 @@ async function streamChat(request: z.infer<typeof chatRequest>, reply: FastifyRe
   });
 
   let sentRole = false;
+  let textContent = '';
+  let reasoningContent = '';
+  let finalRequestId = '';
   try {
     let current = firstResult;
     while (!current.done) {
       const { requestId, item } = current.value;
+      finalRequestId = requestId;
       const delta: Record<string, unknown> = {};
       if (!sentRole) { delta.role = 'assistant'; sentRole = true; }
-      if (item.type === 'message.delta') delta.content = item.text;
-      if (item.type === 'reasoning.summary.delta') delta.reasoning_content = item.text;
+      if (item.type === 'message.delta') { delta.content = item.text; textContent += item.text; }
+      if (item.type === 'reasoning.summary.delta') { delta.reasoning_content = item.text; reasoningContent += item.text; }
       if (item.type === 'search.citation') delta.annotations = [{ type: 'url_citation', url: item.url, title: item.title }];
-      if (item.type === 'image.created') delta.content = `![generated image](${item.url})\n\n`;
+      if (item.type === 'image.created') { const imgMarkdown = `![generated image](${item.url})\n\n`; delta.content = imgMarkdown; textContent += imgMarkdown; }
 
       reply.raw.write(`data: ${JSON.stringify({
         id: requestId,
@@ -143,6 +149,19 @@ async function streamChat(request: z.infer<typeof chatRequest>, reply: FastifyRe
 
       current = await iterator.next();
     }
+
+    const usage = estimateTokens(request.messages, textContent, reasoningContent);
+
+    // Standard OpenAI stream usage chunk (supported by all modern clients / SDKs)
+    reply.raw.write(`data: ${JSON.stringify({
+      id: finalRequestId,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: request.model,
+      choices: [],
+      usage
+    })}\n\n`);
+
     reply.raw.write('data: [DONE]\n\n');
   } catch (error) {
     reply.raw.write(`data: ${JSON.stringify({ error: { message: error instanceof Error ? error.message : 'Gateway error', type: 'api_error', code: 502 } })}\n\n`);
@@ -157,13 +176,23 @@ app.post('/v1/chat/completions', async (request, reply) => {
   const input = chatRequest.parse(request.body);
   if (input.stream) return streamChat(input, reply, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined });
   let content = '';
+  let reasoningContent = '';
   let requestId = '';
   for await (const result of execute({ model: input.model, messages: input.messages as Array<{ role: string; content: unknown }>, stream: false, reasoning: input.reasoning, webSearch: input.web_search }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
     requestId = result.requestId;
     if (result.item.type === 'message.delta') content += result.item.text;
+    if (result.item.type === 'reasoning.summary.delta') reasoningContent += result.item.text;
     if (result.item.type === 'image.created') content += `![generated image](${result.item.url})\n\n`;
   }
-  return { id: requestId, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: input.model, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] };
+  const usage = estimateTokens(input.messages, content, reasoningContent);
+  return {
+    id: requestId,
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model: input.model,
+    choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+    usage
+  };
 });
 
 app.post('/api/auth/login', async (request, reply) => {
