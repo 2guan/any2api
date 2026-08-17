@@ -160,7 +160,7 @@ export class ChatGPTAdapter implements ProviderAdapter {
     }
   }
 
-  async uploadFile(base64OrUrl: string, filename = 'image.png', accessToken = ''): Promise<{ fileId: string; mimeType: string }> {
+  async uploadFile(base64OrUrl: string, filename = 'image.png', accessToken = ''): Promise<{ fileId: string; mimeType: string; size: number }> {
     if (!accessToken) throw new Error('Authenticated account required for image upload');
 
     let buffer: Buffer;
@@ -183,12 +183,14 @@ export class ChatGPTAdapter implements ProviderAdapter {
       buffer = Buffer.from(base64OrUrl, 'base64');
     }
 
+    const accountId = extractChatGPTAccountId(accessToken);
     const reqRes = await fetch(`${BASE_URL}/backend-api/files`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        ...(accountId ? { 'ChatGPT-Account-ID': accountId } : {}),
       },
       body: JSON.stringify({
         file_name: filename,
@@ -212,11 +214,15 @@ export class ChatGPTAdapter implements ProviderAdapter {
 
     await fetch(`${BASE_URL}/backend-api/files/${fileId}/process`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        ...(accountId ? { 'ChatGPT-Account-ID': accountId } : {}),
+      },
       body: JSON.stringify({}),
     });
 
-    return { fileId, mimeType };
+    return { fileId, mimeType, size: buffer.length };
   }
 
   async *streamTurn(request: ProviderRequest, account: Account): AsyncIterable<ProviderEvent> {
@@ -267,45 +273,88 @@ export class ChatGPTAdapter implements ProviderAdapter {
       const content = msg.content;
       const msgNodeId = crypto.randomUUID();
 
-      if (typeof content === 'string') {
-        conversationMessages.push({
-          id: msgNodeId,
-          author: { role },
-          content: { content_type: 'text', parts: [content] },
-        });
-      } else if (Array.isArray(content)) {
-        const textParts: string[] = [];
-        const imageParts: string[] = [];
-        for (const item of content as Array<{ type?: string; text?: string; image_url?: { url?: string } | string }>) {
-          if (item.type === 'text' && item.text) textParts.push(item.text);
-          if (item.type === 'image_url') {
-            const url = typeof item.image_url === 'string' ? item.image_url : item.image_url?.url;
-            if (url) imageParts.push(url);
-          }
-        }
+      const textParts: string[] = [];
+      const imageParts: string[] = [];
 
-        const parts: unknown[] = [];
-        if (imageParts.length > 0 && accessToken) {
-          for (let i = 0; i < imageParts.length; i++) {
-            try {
-              const uploaded = await this.uploadFile(imageParts[i], `image_${i + 1}.png`, accessToken);
-              parts.push({
-                content_type: 'image_asset_pointer',
-                asset_pointer: `file-service://${uploaded.fileId}`,
-              });
-            } catch {
-              /* Ignore image upload error */
+      if (typeof content === 'string') {
+        const mdImgRegex = /!\[.*?\]\((data:image\/[a-zA-Z0-9+.-]+;base64,[^\s)]+|https?:\/\/[^\s)]+)\)/g;
+        let match: RegExpExecArray | null;
+        let lastIdx = 0;
+        while ((match = mdImgRegex.exec(content)) !== null) {
+          textParts.push(content.slice(lastIdx, match.index));
+          imageParts.push(match[1]);
+          lastIdx = mdImgRegex.lastIndex;
+        }
+        textParts.push(content.slice(lastIdx));
+      } else if (Array.isArray(content)) {
+        for (const item of content as Array<Record<string, unknown> | string>) {
+          if (typeof item === 'string') {
+            textParts.push(item);
+          } else if (item && typeof item === 'object') {
+            if (item.type === 'text' && typeof item.text === 'string') {
+              textParts.push(item.text);
+            } else if (item.type === 'image_url') {
+              const url = typeof item.image_url === 'string' ? item.image_url : (item.image_url as { url?: string })?.url;
+              if (url) imageParts.push(url);
+            } else if (item.type === 'image') {
+              if (item.source && typeof item.source === 'object') {
+                const src = item.source as { data?: string; media_type?: string };
+                if (src.data) imageParts.push(`data:${src.media_type || 'image/png'};base64,${src.data}`);
+              } else if (typeof item.url === 'string') {
+                imageParts.push(item.url);
+              }
+            } else if (item.type === 'input_image') {
+              const url = typeof item.image_url === 'string' ? item.image_url : (item.image_url as { url?: string })?.url;
+              if (url) imageParts.push(url);
             }
           }
         }
-        if (textParts.length > 0) parts.push(textParts.join(''));
-
-        conversationMessages.push({
-          id: msgNodeId,
-          author: { role },
-          content: { content_type: parts.length > 1 || imageParts.length > 0 ? 'multimodal_text' : 'text', parts },
-        });
       }
+
+      const combinedText = textParts.join('').trim();
+      const parts: unknown[] = [];
+      const attachments: unknown[] = [];
+
+      if (imageParts.length > 0 && accessToken) {
+        for (let i = 0; i < imageParts.length; i++) {
+          try {
+            const uploaded = await this.uploadFile(imageParts[i], `image_${i + 1}.png`, accessToken);
+            parts.push({
+              content_type: 'image_asset_pointer',
+              asset_pointer: `file-service://${uploaded.fileId}`,
+              size_bytes: uploaded.size,
+              width: null,
+              height: null
+            });
+            attachments.push({
+              id: uploaded.fileId,
+              name: `image_${i + 1}.png`,
+              size: uploaded.size,
+              mime_type: uploaded.mimeType,
+              width: null,
+              height: null
+            });
+          } catch (err) {
+            console.error('ChatGPT file upload error:', err);
+          }
+        }
+      }
+
+      if (combinedText) {
+        parts.push(combinedText);
+      } else if (parts.length === 0) {
+        parts.push(typeof content === 'string' ? content : '');
+      }
+
+      conversationMessages.push({
+        id: msgNodeId,
+        author: { role },
+        content: {
+          content_type: parts.length > 1 || imageParts.length > 0 ? 'multimodal_text' : 'text',
+          parts
+        },
+        metadata: attachments.length > 0 ? { attachments } : undefined
+      });
     }
 
     const currentPayload: Record<string, unknown> = {

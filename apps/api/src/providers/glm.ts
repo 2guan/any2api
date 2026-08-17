@@ -36,9 +36,47 @@ function generateGLMSign() {
   return { timestamp, xNonce, sign };
 }
 
-function requestText(messages: ProviderRequest['messages']) {
+function extractGLMContent(messages: ProviderRequest['messages']) {
   const lastMsg = [...messages].reverse().find((m) => m.role === 'user') ?? messages.at(-1);
-  return typeof lastMsg?.content === 'string' ? lastMsg.content : JSON.stringify(lastMsg?.content ?? '');
+  const images: string[] = [];
+  const textParts: string[] = [];
+
+  const raw = lastMsg?.content;
+  if (typeof raw === 'string') {
+    const mdImgRegex = /!\[.*?\]\((data:image\/[a-zA-Z0-9+.-]+;base64,[^\s)]+|https?:\/\/[^\s)]+)\)/g;
+    let match: RegExpExecArray | null;
+    let lastIdx = 0;
+    while ((match = mdImgRegex.exec(raw)) !== null) {
+      textParts.push(raw.slice(lastIdx, match.index));
+      images.push(match[1]);
+      lastIdx = mdImgRegex.lastIndex;
+    }
+    textParts.push(raw.slice(lastIdx));
+  } else if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === 'string') {
+        textParts.push(item);
+      } else if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>;
+        if (obj.type === 'text' && typeof obj.text === 'string') {
+          textParts.push(obj.text);
+        } else if (obj.type === 'image_url') {
+          const url = typeof obj.image_url === 'string' ? obj.image_url : (obj.image_url as { url?: string })?.url;
+          if (url) images.push(url);
+        } else if (obj.type === 'image') {
+          if (obj.source && typeof obj.source === 'object') {
+            const src = obj.source as { data?: string; media_type?: string };
+            if (src.data) images.push(`data:${src.media_type || 'image/png'};base64,${src.data}`);
+          } else if (typeof obj.url === 'string') {
+            images.push(obj.url);
+          }
+        }
+      }
+    }
+  }
+
+  const prompt = textParts.join('').trim() || (images.length ? '请识别这张图片' : (typeof raw === 'string' ? raw : JSON.stringify(raw ?? '')));
+  return { prompt, images };
 }
 
 export class GLMAdapter implements ProviderAdapter {
@@ -92,7 +130,7 @@ export class GLMAdapter implements ProviderAdapter {
       throw new Error('智谱 ChatGLM Authorization Token 已过期（有效期通常为 2 小时），请在网页端 F12 重新复制最新的 Authorization 标头并保存');
     }
 
-    const prompt = requestText(request.messages);
+    const { prompt, images } = extractGLMContent(request.messages);
     const model = request.model || 'glm-4';
 
     // 尝试 1: 直接高性能 HTTP POST 请求（带逆向签名）
@@ -122,7 +160,10 @@ export class GLMAdapter implements ProviderAdapter {
         messages: [
           {
             role: 'user',
-            content: [{ type: 'text', text: prompt }]
+            content: [
+              ...(images.map((img) => ({ type: 'image', image: [img] }))),
+              { type: 'text', text: prompt }
+            ]
           }
         ]
       };
