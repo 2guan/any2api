@@ -1596,7 +1596,7 @@ function MarkdownText({ value }: { value: string }) {
   return <div className="markdown-text">{blocks}</div>;
 }
 
-function TestConsole({ models, accounts }: { models: Array<{ id: string; provider: string }>; accounts: Account[] }) {
+function TestConsole({ models, accounts }: { models: Array<{ id: string; provider: string; capabilities?: { input?: string[]; output?: string[]; imageGeneration?: boolean; reasoningSummary?: boolean; webSearch?: boolean } }>; accounts: Account[] }) {
   type Message = { id: string; role: string; content: string; reasoning?: string; citations?: Array<{ title?: string; url?: string }> };
   const [model, setModel] = useState(models[0]?.id ?? '');
   const [accountId, setAccountId] = useState('');
@@ -1610,6 +1610,14 @@ function TestConsole({ models, accounts }: { models: Array<{ id: string; provide
   const selectedModel = modelChoices.find((item) => item.id === model) ?? modelChoices[0];
   const accountChoices = selectedModel ? accounts.filter((account) => account.status === 'ready' && account.provider === selectedModel.provider) : accounts.filter((account) => account.status === 'ready');
   const activeModel = selectedModel?.id ?? '';
+
+  const isImageModel = Boolean(selectedModel?.capabilities?.imageGeneration || selectedModel?.capabilities?.output?.includes('image'));
+  const isVideoModel = Boolean(selectedModel?.capabilities?.output?.includes('video'));
+  const testPlaceholder = isImageModel
+    ? "请输入生图提示词 (Prompt)，例如：深秋森林中的清澈溪流与小鹿，清晨薄雾，8k分辨率…"
+    : isVideoModel
+    ? "请输入视频生成提示词…"
+    : "请输入要测试的内容…";
 
   useEffect(() => {
     const textarea = promptRef.current;
@@ -1708,7 +1716,13 @@ function TestConsole({ models, accounts }: { models: Array<{ id: string; provide
             <div className="test-select-group">
               <Field label="模型">
                 <Select value={activeModel} onChange={(_, data) => chooseModel(data.value)} disabled={!models.length}>
-                  {modelChoices.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+                  {modelChoices.map((item) => {
+                    const caps = item.capabilities;
+                    const isImg = caps?.imageGeneration || caps?.output?.includes('image');
+                    const isVid = caps?.output?.includes('video');
+                    const tag = isVid ? '🎬 [生视频]' : isImg ? '🖼️ [生图]' : (caps?.reasoningSummary ? '💭 [思考]' : '💬 [对话]');
+                    return <option key={item.id} value={item.id}>{item.id} · {tag}</option>;
+                  })}
                 </Select>
               </Field>
               <span className="test-link-mark" aria-hidden="true">→</span>
@@ -1722,8 +1736,8 @@ function TestConsole({ models, accounts }: { models: Array<{ id: string; provide
           </div>
           <Card className="chat-card test-chat-card">
           <div className="composer">
-            <textarea ref={promptRef} aria-label="测试消息" rows={1} value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void send(); }} placeholder="请输入要测试的内容…" />
-            <Button appearance="primary" onClick={() => void send()} disabled={busy || !activeModel || !accountChoices.length}>{busy ? <Spinner size="tiny" /> : null}{busy ? '生成中' : '发送'}</Button>
+            <textarea ref={promptRef} aria-label="测试消息" rows={1} value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void send(); }} placeholder={testPlaceholder} />
+            <Button appearance="primary" onClick={() => void send()} disabled={busy || !activeModel || !accountChoices.length}>{busy ? <Spinner size="tiny" /> : null}{busy ? '生成中' : (isImageModel ? '生成图片' : isVideoModel ? '生成视频' : '发送')}</Button>
           </div>
           <div className="chat-thread">
             {messages.length ? [...messages].reverse().map((message) => <div className={'chat-message ' + message.role} key={message.id}>

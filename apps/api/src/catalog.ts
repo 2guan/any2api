@@ -74,7 +74,38 @@ export function visibleModels() {
 }
 
 export function modelList() {
-  return { object: 'list', data: visibleModels().map((model) => ({ id: model.id, object: 'model', created: 0, owned_by: 'any2api' })) };
+  return {
+    object: 'list',
+    data: visibleModels().map((model) => {
+      let capabilities: ModelCapabilities = { input: ['text'], output: ['text'], streaming: true };
+      try { capabilities = JSON.parse(model.capabilities_json); } catch {}
+      const isImage = Boolean(capabilities.imageGeneration || capabilities.output?.includes('image'));
+      const isVideo = Boolean(capabilities.output?.includes('video'));
+      const type = isVideo ? 'video' : isImage ? 'image' : 'chat';
+      return {
+        id: model.id,
+        object: 'model',
+        created: 0,
+        owned_by: model.provider || 'any2api',
+        type,
+        capabilities,
+        permission: [{
+          id: `modelperm-${model.id}`,
+          object: 'model_permission',
+          created: 0,
+          allow_create_engine: false,
+          allow_sampling: true,
+          allow_logprobs: true,
+          allow_search_indices: false,
+          allow_view: true,
+          allow_fine_tuning: false,
+          organization: '*',
+          group: null,
+          is_blocking: false
+        }]
+      };
+    })
+  };
 }
 
 export function catalog() {
