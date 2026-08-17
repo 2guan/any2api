@@ -15,7 +15,9 @@ import { providers } from './providers/registry.js';
 import type { ProviderEvent } from './providers/types.js';
 import './providers/index.js';
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getMediaFile } from './media.js';
 import { registerImageRoutes } from './routes/images.js';
 import { registerMessagesRoutes } from './routes/messages.js';
@@ -910,5 +912,48 @@ app.post('/api/connection-test', async (request, reply) => {
   requireRole(request, ['owner', 'admin', 'operator']); const body = chatRequest.extend({ accountId: z.string().optional() }).parse(request.body);
   return streamChat(body, reply, { kind: 'connection_test', accountId: body.accountId });
 });
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const adminDistPath = resolve(__dirname, '../../../apps/admin/dist');
+const altAdminDistPath = resolve(__dirname, '../../admin/dist');
+const effectiveAdminDist = existsSync(adminDistPath) ? adminDistPath : existsSync(altAdminDistPath) ? altAdminDistPath : null;
+
+if (effectiveAdminDist) {
+  app.get('/*', async (request, reply) => {
+    const rawUrl = request.raw.url || '/';
+    const cleanPath = rawUrl.split('?')[0];
+    if (cleanPath.startsWith('/api') || cleanPath.startsWith('/v1') || cleanPath.startsWith('/media') || cleanPath === '/health') {
+      return reply.status(404).send({ error: { message: 'Not found', code: 404 } });
+    }
+    const relativePath = cleanPath.startsWith('/') ? cleanPath.slice(1) : cleanPath;
+    const targetFile = join(effectiveAdminDist, relativePath);
+    if (relativePath && existsSync(targetFile) && statSync(targetFile).isFile()) {
+      const ext = relativePath.split('.').pop()?.toLowerCase() || '';
+      const mimeMap: Record<string, string> = {
+        html: 'text/html; charset=utf-8',
+        js: 'application/javascript; charset=utf-8',
+        css: 'text/css; charset=utf-8',
+        svg: 'image/svg+xml',
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        webp: 'image/webp',
+        ico: 'image/x-icon',
+        json: 'application/json',
+        woff: 'font/woff',
+        woff2: 'font/woff2'
+      };
+      reply.header('Content-Type', mimeMap[ext] || 'application/octet-stream');
+      return reply.send(readFileSync(targetFile));
+    }
+    const indexFile = join(effectiveAdminDist, 'index.html');
+    if (existsSync(indexFile)) {
+      reply.header('Content-Type', 'text/html; charset=utf-8');
+      return reply.send(readFileSync(indexFile));
+    }
+    return reply.status(404).send('Admin UI not built');
+  });
+}
 
 await app.listen({ host: config.host, port: config.port });

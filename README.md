@@ -93,55 +93,89 @@ Any2API (Monorepo)
 
 ---
 
-## 🚀 快速开始
+## 🚀 部署与运行方式
 
-### 1. 环境准备
-- **Node.js**: `v20.0.0` 或更高版本（推荐 `v22.x`）
-- **npm**: `v10.x` 或更高版本
+### 方式一：🐳 Docker Compose 一键部署（推荐）
 
-### 2. 克隆仓库与安装依赖
+本项目已提供多阶段构建优化的 `Dockerfile` 与 `docker-compose.yml`，数据目录 `./data` 会自动挂载到宿主机以实现数据库、加密密钥与媒体资产的持久化存储。
+
+#### 1. 一键启动
 ```bash
+# 克隆仓库
 git clone https://github.com/2guan/any2api.git
 cd any2api
 
-# 安装项目依赖 (Monorepo 自动安装所有工作区)
+# 启动容器 (首次启动会自动完成编译与无头环境准备)
+docker compose up -d
+```
+
+#### 2. 访问与使用
+- 浏览器打开控制台：**`http://localhost:3300/`**
+- 默认管理员账号：`admin` / `admin123`
+- OpenAI API 请求基地址：`http://localhost:3300/v1`
+
+---
+
+#### 3. 环境变量与参数说明 (`docker-compose.yml`)
+
+| 环境变量参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `ANY2API_PORT` | `8788` | 容器内部服务监听端口 |
+| `ANY2API_DATA_DIR` | `/app/data` | 数据持久化存储路径（已挂载到宿主机 `./data`） |
+| `ANY2API_OWNER_USERNAME` | `admin` | 控制台初始管理员用户名 |
+| `ANY2API_OWNER_PASSWORD` | `admin123` | 控制台初始管理员密码 |
+| `ANY2API_ENCRYPTION_KEY` | *(自动生成)* | 凭据高强度加解密密钥（32 字节 base64url，若不填会自动持久化保存在 `./data/.encryption-key`） |
+| `LOG_LEVEL` | `info` | 日志输出级别 (`info` / `debug` / `warn` / `error`) |
+
+> [!TIP]
+> 如需修改外部端口（例如改用 8080），只需在 `docker-compose.yml` 中修改端口映射为 `"8080:8788"` 即可。
+
+---
+
+### 方式二：💻 纯 Docker 单容器运行
+
+```bash
+# 构建镜像
+docker build -t any2api:latest .
+
+# 启动并挂载数据目录
+docker run -d \
+  --name any2api \
+  --restart unless-stopped \
+  -p 3300:8788 \
+  -v $(pwd)/data:/app/data \
+  -e ANY2API_OWNER_USERNAME=admin \
+  -e ANY2API_OWNER_PASSWORD=admin123 \
+  any2api:latest
+```
+
+---
+
+### 方式三：🛠️ 本地源码运行 (Node.js)
+
+#### 1. 环境准备
+- **Node.js**: `v20.0.0` 或更高版本（推荐 `v22.x`）
+- **npm**: `v10.x` 或更高版本
+
+#### 2. 安装依赖
+```bash
+git clone https://github.com/2guan/any2api.git
+cd any2api
 npm install
 ```
 
-### 3. 配置环境变量
-复制环境变量配置文件：
-```bash
-cp .env.example .env
-```
-根据需要调整 `.env` 中的基础配置：
-```ini
-ANY2API_PORT=8788
-ADMIN_PORT=3300
-APP_MASTER_KEY=any2api-master-secure-secret-key-32chars
-LOG_LEVEL=info
-```
-
-### 4. 启动本地开发服务
+#### 3. 启动开发模式
 ```bash
 # 启动后端 API 网关 (端口 8788)
 npm run dev
 
-# 启动前端管理控制台 (端口 3300)
+# 启动前端控制台 (端口 3300)
 npm run dev:admin
 ```
 
-启动完成后：
-- 访问管理控制台：**`http://localhost:3300/`**
-- 默认管理员账号：`admin` / `admin123`（首次登录后建议立即在【用户管理】修改密码）
-
----
-
-### 5. 生产构建与启动
+#### 4. 生产编译与运行
 ```bash
-# 构建全站生产产物
 npm run build
-
-# 启动生产服务
 npm start
 ```
 

@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+.DS_Store
+.git
+.gitignore
+data
+*.sqlite
+*.sqlite-*
+playwright-report
+test-results
+QuickQR
