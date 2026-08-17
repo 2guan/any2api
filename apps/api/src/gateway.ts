@@ -47,14 +47,15 @@ export async function* execute(request: GatewayRequest, options: { kind: 'api' |
     }
     writeResponseSummary();
     finishRequest(requestId, 'completed', 200);
-    releaseAccount(account.id, true, Date.now() - started);
+    releaseAccount(account.id, true, Date.now() - started, 200);
     event(requestId, 'info', 'request.completed', 'Request completed', { latencyMs: Date.now() - started });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown provider error';
+    const errStatusCode = (error as { statusCode?: number }).statusCode ?? 502;
     writeResponseSummary();
-    finishRequest(requestId, 'failed', 502);
-    releaseAccount(account.id, false, Date.now() - started);
+    finishRequest(requestId, 'failed', errStatusCode);
+    releaseAccount(account.id, false, Date.now() - started, errStatusCode);
     event(requestId, 'error', 'request.failed', message);
-    throw Object.assign(new Error(message), { requestId, statusCode: 502 });
+    throw Object.assign(new Error(message), { requestId, statusCode: errStatusCode });
   }
 }

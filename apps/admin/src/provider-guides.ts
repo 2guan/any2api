@@ -19,66 +19,127 @@ export type ProviderGuide = {
 
 export const providerGuides: ProviderGuide[] = [
   {
-    id: 'chatgpt', name: 'ChatGPT', loginUrl: 'https://chatgpt.com', credentialSummary: 'Refresh Token 优先，其次是 Access Token 或完整会话 Cookie。', refreshPolicy: 'Refresh Token 可在支持的、已授权流程中轮换。会话 Cookie 与 Access Token 失效后需要人工重新授权。',
+    id: 'chatgpt',
+    name: 'ChatGPT',
+    loginUrl: 'https://chatgpt.com',
+    credentialSummary: 'Refresh Token 优先，其次是 Access Token 或完整会话 Cookie。',
+    refreshPolicy: '内置自动续签：Refresh Token 会在临期时自动调用 OAuth 换取新 Token 并写回数据库。',
     fields: [
-      { key: 'refresh_token', label: 'Refresh Token', kind: 'password', hint: '推荐。仅填写由你本人在受支持授权流程中获得的值。', preferred: true },
-      { key: 'access_token', label: 'Access Token', kind: 'password', hint: '短期凭据，通常以 JWT 形式提供。' },
-      { key: 'session_cookie', label: 'Session Cookie', kind: 'textarea', hint: '粘贴完整 Cookie 字符串，不要只填 cookie 名称。' },
-      { key: 'session_id', label: '会话 ID', kind: 'password', hint: '可选。仅用于恢复你自己的持续会话。' }
+      { key: 'refresh_token', label: 'Refresh Token', kind: 'password', hint: '推荐。通过官方 OAuth 授权或账户导出流程获取。', preferred: true },
+      { key: 'access_token', label: 'Access Token', kind: 'password', hint: '短期凭据，通常以 eyJ 开头的 JWT 格式提供。' },
+      { key: 'session_cookie', label: 'Session Cookie', kind: 'textarea', hint: '粘贴完整 Cookie 字符串（包含 __Secure-next-auth.session-token）。' },
+      { key: 'session_id', label: '会话 ID', kind: 'password', hint: '可选。用于持续对话会话。' }
     ],
-    steps: ['登录你自己的 ChatGPT 账户。', '优先使用正式可用的 OAuth 授权或账户导出流程获得 Refresh Token。', '若仅有网页会话，请从自己的浏览器会话中复制完整 Cookie，并在账号池中粘贴。', '保存后在连接测试中验证。出现登录、MFA 或验证码时由管理员在官方页面完成。'],
-    warning: '不要录入他人账号、验证码或未获授权的会话数据。当前 2.0 不会绕过登录验证或自动处理验证码。'
+    steps: [
+      '登录你自己的 ChatGPT 网页版（https://chatgpt.com）。',
+      '优先使用正式 OAuth 授权或账户导出流程获得 Refresh Token。',
+      '若使用网页会话，从浏览器 F12 网络标头中复制 Authorization 或 Cookie 粘贴至账号池。',
+      '保存后在连接测试中选择 gpt-5.6 或 gpt-image-2 验证。'
+    ],
+    warning: '提取凭据后切勿在浏览器中点击“Log out / 退出登录”，否则服务端会立即注销该 Token。关闭网页即可。'
   },
   {
-    id: 'kimi', name: 'Kimi', loginUrl: 'https://kimi.moonshot.cn', credentialSummary: '以 Refresh Token 为主，可选保存当前 Access Token 与会话 ID。', refreshPolicy: '刷新调度器会在过期前尝试刷新。刷新失败会转为“需要人工处理”。',
+    id: 'kimi',
+    name: 'Kimi (月之暗面)',
+    loginUrl: 'https://kimi.moonshot.cn',
+    credentialSummary: 'Authorization Token（访问令牌）或 Refresh Token 均可。网页端 F12 即可直接复制。',
+    refreshPolicy: '若填入 Refresh Token 系统会自动静默续期；若填入 Authorization Token 则按令牌有效期自动调度。',
     fields: [
-      { key: 'refresh_token', label: 'Refresh Token', kind: 'password', hint: '推荐的长期授权材料。', preferred: true },
-      { key: 'access_token', label: 'Access Token', kind: 'password', hint: '可选的当前访问令牌。' },
+      { key: 'token', label: 'Authorization Token / 访问令牌', kind: 'password', hint: '推荐。在 Kimi 网页按 F12，从网络面板中复制 Authorization 请求头的 eyJ... 字符串。', preferred: true },
+      { key: 'refresh_token', label: 'Refresh Token', kind: 'password', hint: '可选。控制台执行 localStorage.getItem(\'refresh_token\') 提取。' },
       { key: 'session_id', label: '会话 ID', kind: 'password', hint: '可选，用于保持网页会话绑定。' }
     ],
-    steps: ['登录你自己的 Kimi 网页账户。', '通过该账户允许的授权或会话管理方式取得 Refresh Token。', '将 Refresh Token 粘贴到账号池，Access Token 仅作为补充。', '连接测试通过后，平台才会将该账号标记为可调度。'],
-    warning: '不要频繁退出或切换同一网页会话。授权材料只应保存在本机已加密的账号池中。'
+    steps: [
+      '在浏览器中登录你自己的 Kimi 网页版（https://kimi.moonshot.cn）。',
+      '按 F12 打开开发者工具，切换到「网络 / Network」标签页。',
+      '在 Kimi 页面发送一条消息或刷新网页，在网络请求列表中点击任意 api 请求（如 /api/chat）。',
+      '在右侧「标头 / Headers」中找到「Authorization」，复制其后以 eyJ 开头的完整 Token（带或不带 Bearer 均可）。',
+      '将复制的 Token 粘贴到账号池中保存即可！亦可在「控制台 / Console」输入 localStorage.getItem(\'token\') 提取。'
+    ],
+    warning: '提取 Token 后切勿在网页端点击“退出登录”，否则服务端会立即注销该 Token。关闭网页标签页即可。'
   },
   {
-    id: 'deepseek', name: 'DeepSeek', loginUrl: 'https://chat.deepseek.com', credentialSummary: 'User Token 或 Bearer Token 为主，可选保存会话 ID。', refreshPolicy: '若渠道没有公开的 refresh 能力，失效后会停用并要求管理员更新令牌。',
+    id: 'deepseek',
+    name: 'DeepSeek',
+    loginUrl: 'https://chat.deepseek.com',
+    credentialSummary: 'User Token（用户令牌）或 Authorization 请求头。控制台一行代码即可快速提取。',
+    refreshPolicy: '有效期约 30 天。系统支持直连 API 与无头仿真双通道，自动识别思维链与搜索引用。',
     fields: [
-      { key: 'user_token', label: 'User Token', kind: 'password', hint: '优先填写你本人账户的用户令牌。', preferred: true },
-      { key: 'access_token', label: 'Bearer Token', kind: 'password', hint: '可选的替代访问令牌。' },
+      { key: 'user_token', label: 'User Token / 访问令牌', kind: 'password', hint: '推荐。控制台执行 JSON.parse(localStorage.getItem(\'userToken\')).value 快速获取。', preferred: true },
+      { key: 'access_token', label: 'Bearer Token', kind: 'password', hint: '可选。从网络标头中复制 Authorization: Bearer eyJ... 字符串。' },
       { key: 'session_id', label: '会话 ID', kind: 'password', hint: '可选，用于持续对话。' }
     ],
-    steps: ['登录自己的 DeepSeek 网页账户。', '仅从自己已登录的浏览器会话或正式账户功能中取得可用令牌。', '先粘贴 User Token，必要时补充会话 ID。', '使用连接测试检查推理和搜索能力是否已被该账户授予。'],
-    warning: '令牌失效后请重新登录官方页面更新。不要用重试或高并发请求掩盖认证失败。'
+    steps: [
+      '在浏览器中登录你自己的 DeepSeek 网页版（https://chat.deepseek.com）。',
+      '按 F12 打开开发者工具，切换到「控制台 / Console」标签页。',
+      '粘贴执行代码：JSON.parse(localStorage.getItem(\'userToken\')).value 并回车。',
+      '直接复制控制台输出的以 eyJ 开头的 Token 字符串。',
+      '粘贴至账号池中保存即可！亦可在「网络 / Network」请求标头中复制 Authorization 字符串。'
+    ],
+    warning: '提取 Token 后切勿在网页端点击“退出登录”，否则服务端会注销该 Token。关闭网页标签页即可。'
   },
   {
-    id: 'glm', name: '智谱 GLM', loginUrl: 'https://chatglm.cn', credentialSummary: 'Authorization Token 为主，支持同时保存 Refresh Token 与会话 ID。', refreshPolicy: '同时具备 Refresh Token 时优先刷新，否则按 Access Token 有效期监控。',
+    id: 'glm',
+    name: '智谱 GLM',
+    loginUrl: 'https://chatglm.cn',
+    credentialSummary: 'Authorization Token 为主，支持同时录入 Refresh Token 实现自动续期。',
+    refreshPolicy: '同时配置 Refresh Token 时系统会在 JWT 临期前自动调用智谱后台续签并保存至数据库。',
     fields: [
-      { key: 'access_token', label: 'Authorization Token', kind: 'password', hint: '主要凭据。', preferred: true },
-      { key: 'refresh_token', label: 'Refresh Token', kind: 'password', hint: '可选。提供后可参与自动刷新。' },
+      { key: 'access_token', label: 'Authorization Token / 访问令牌', kind: 'password', hint: '推荐。在智谱网页按 F12，从网络面板中复制 Authorization 请求头的 eyJ... 字符串（Access Token）。', preferred: true },
+      { key: 'refresh_token', label: 'Refresh Token / 刷新令牌', kind: 'password', hint: '可选。控制台执行 localStorage.getItem(\'chatglm_refresh_token\') 提取。' },
       { key: 'session_id', label: '会话 ID', kind: 'password', hint: '可选。' }
     ],
-    steps: ['登录你自己的智谱清言或 GLM 网页账户。', '按账户允许的方式取得 Authorization Token。', '如同时获得 Refresh Token，请一并录入以启用刷新计划。', '保存后通过连接测试确认该账号实际可见的模型。'],
-    warning: '不要把开发者 API Key 与网页账户 Token 混在同一账号记录。它们的权限和生命周期不同。'
+    steps: [
+      '在浏览器中登录你自己的智谱清言网页版（https://chatglm.cn）。',
+      '按 F12 打开开发者工具，切换到「网络 / Network」标签页。',
+      '在智谱清言页面发送一条消息或刷新页面，在网络请求中点击任意 api 请求（如 /conversation/recent_list）。',
+      '在右侧「标头 / Headers」中复制 Authorization: Bearer 后以 eyJ 开头的 Access Token（带或不带 Bearer 均可）。',
+      '亦可在「控制台 / Console」执行 localStorage.getItem(\'chatglm_token\') 提取。粘贴至账号池保存即可！'
+    ],
+    warning: '请勿将 Refresh Token 填入 Authorization Token 字段。提取后直接关闭网页，切勿点击“退出登录”。'
   },
   {
-    id: 'qwen', name: '通义千问', loginUrl: 'https://chat.qwen.ai', credentialSummary: '完整 Cookie 优先，可选 Bearer Token 与会话 ID。', refreshPolicy: 'Cookie 失效、跳转登录页或风控挑战都会转为人工重新认证。',
+    id: 'qwen',
+    name: '通义千问',
+    loginUrl: 'https://chat.qwen.ai',
+    credentialSummary: 'Authorization Token（Bearer eyJ...）或包含 token= 的完整 Cookie。',
+    refreshPolicy: '系统内置真实鉴权探测、直接 HTTP API 直连与 Playwright 无头浏览器仿真双通道。',
     fields: [
-      { key: 'cookie', label: '完整 Cookie', kind: 'textarea', hint: '推荐。需包含该网页会话实际使用的登录凭据。', preferred: true },
-      { key: 'access_token', label: 'Bearer Token', kind: 'password', hint: '可选。' },
+      { key: 'cookie', label: 'Authorization 或 Cookie', kind: 'textarea', hint: '推荐。从 chat.qwen.ai 网络请求标头复制 Authorization (Bearer eyJ...) 或整串 Cookie。', preferred: true },
+      { key: 'access_token', label: 'Bearer Token', kind: 'password', hint: '可选。在控制台执行 localStorage.getItem(\'token\') 提取。' },
       { key: 'session_id', label: '会话 ID', kind: 'password', hint: '可选。' }
     ],
-    steps: ['登录你自己的通义千问网页账户。', '从该账户当前浏览器会话中复制完整 Cookie，而非单个不完整字段。', '录入后先运行连接测试，确认模型目录与能力。', '出现重新登录页时在官方页面人工完成认证，再更新账号池。'],
-    warning: 'Cookie 等同于登录权限。不要通过聊天、日志、截图或工单传输完整 Cookie。'
+    steps: [
+      '在浏览器中登录你自己的通义千问网页版（https://chat.qwen.ai）。',
+      '按 F12 打开开发者工具，切换到「网络 / Network」标签页。',
+      '在千问页面发送一条消息或刷新页面，在网络请求列表中点击任意 /api/ 请求（如 /api/v1/auths 或 /api/v2/chat/completions）。',
+      '在右侧「标头 / Headers」中复制「Authorization」标头的值（以 Bearer eyJ... 开头）或「Cookie」标头的值。',
+      '亦可在「控制台 / Console」执行 localStorage.getItem(\'token\') 提取，粘贴至账号池保存即可！'
+    ],
+    warning: 'Cookie / Token 包含登录会话，提取后请直接关闭网页，切勿点击“退出登录”。'
   },
   {
-    id: 'jimeng', name: '即梦', loginUrl: 'https://jimeng.jianying.com', credentialSummary: '`sessionid` 或完整 Cookie，用于图像和视频创作任务。', refreshPolicy: '即梦会话失效或权益不足时不重试消耗型任务，直接记录原因。',
+    id: 'jimeng',
+    name: '即梦 AI',
+    loginUrl: 'https://jimeng.jianying.com',
+    credentialSummary: 'sessionid（会话凭据）或完整 Cookie。在控制台一行代码即可提取。',
+    refreshPolicy: '支持 2K 遇限额自动无感降级 1K 重试机制，生成的画作会自动转存至本地服务器持久化托管。',
     fields: [
-      { key: 'sessionid', label: 'sessionid', kind: 'password', hint: '推荐。填入你本人网页会话的 sessionid。', preferred: true },
-      { key: 'cookie', label: '完整 Cookie', kind: 'textarea', hint: '可选。兼容需要多个会话字段的情况。' },
+      { key: 'sessionid', label: 'sessionid', kind: 'password', hint: '推荐。在即梦控制台执行 document.cookie.match(/sessionid=([^;]+)/)[1] 提取 32 位字符串。', preferred: true },
+      { key: 'cookie', label: '完整 Cookie', kind: 'textarea', hint: '可选。控制台执行 document.cookie 复制全部内容。' },
       { key: 'session_id', label: '任务会话 ID', kind: 'password', hint: '可选。' }
     ],
-    steps: ['登录你自己的即梦网页账户。', '在自己的浏览器会话中取得 sessionid，或复制完整 Cookie。', '录入后选择实际可见的图像或视频模型进行连接测试。', '确认账户额度和生成权益后再用于 API 路由。'],
-    warning: '图像与视频任务可能消耗账户额度。连接测试不会自动提交消耗型生成请求。'
+    steps: [
+      '在浏览器中登录你自己的即梦 AI 网页版（https://jimeng.jianying.com）。',
+      '按 F12 打开开发者工具，切换到「控制台 / Console」标签页。',
+      '粘贴执行代码：document.cookie.match(/sessionid=([^;]+)/)?.[1] || document.cookie 并回车。',
+      '复制输出的 sessionid（32位字符串）或整串 Cookie，粘贴至账号池保存。',
+      '在【连接测试】中选择 jimeng-3.1 等绘图模型发送生图提示词即可体验！'
+    ],
+    warning: '提取凭据后切勿在即梦网页端点击“退出登录”，否则服务端会注销该 sessionid。'
   }
 ];
 
-export function guideFor(provider: string) { return providerGuides.find((guide) => guide.id === provider) ?? providerGuides[0]; }
+export function guideFor(provider: string) {
+  return providerGuides.find((guide) => guide.id === provider) ?? providerGuides[0];
+}

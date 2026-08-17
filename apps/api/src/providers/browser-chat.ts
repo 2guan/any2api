@@ -68,7 +68,12 @@ export class BrowserChatAdapter implements ProviderAdapter {
         yield { type: 'completed' };
         return;
       }
-      const input = page.locator(this.profile.input).first(); await input.waitFor({ state: 'visible', timeout: 15_000 });
+      const input = page.locator(this.profile.input).first();
+      try {
+        await input.waitFor({ state: 'visible', timeout: 15_000 });
+      } catch {
+        throw new Error(`${this.provider} 页面未能在 15 秒内就绪输入框。常见原因：当前 IP 被 OpenAI/Cloudflare 风控阻断，或登录态完全失效。建议配置代理节点或前往【账号池】重新一键授权 OAuth 凭据。`);
+      }
       const knownOutputs = new Set(await this.outputs(page));
       const outputCountBeforeSend = knownOutputs.size;
       await input.fill(requestText(request.messages));
@@ -121,10 +126,10 @@ export class BrowserChatAdapter implements ProviderAdapter {
   }
 
   private async context(account: Account) {
-    const credentials = credentialsFor(account.id); const rawCookie = credentials[this.profile.cookieKey ?? 'cookie'] ?? credentials.cookie ?? credentials.session_cookie ?? (credentials.sessionid ? `sessionid=${credentials.sessionid}` : '');
+    const credentials = credentialsFor(account.id);
+    const rawCookie = credentials[this.profile.cookieKey ?? 'cookie'] ?? credentials.cookie ?? credentials.session_cookie ?? (credentials.sessionid ? `sessionid=${credentials.sessionid}` : '');
     const cookies = rawCookie.includes('=') && this.profile.cookieDomain ? cookiePairs(rawCookie, this.profile.cookieDomain) : [];
-    if (!cookies.length && !this.profile.tokenStorage?.some((key) => credentials[key])) throw new Error(`${this.provider} requires a full Cookie or supported account token`);
-    const token = credentials.user_token ?? credentials.access_token ?? '';
+    const token = credentials.user_token ?? credentials.access_token ?? credentials.token ?? '';
     const storage = Object.fromEntries((this.profile.tokenStorage ?? []).filter(() => token).map((key) => [key, key === 'userToken' ? JSON.stringify(token) : token]));
     return { context: await browserSupervisor.prepare(account.id, cookies, storage), credentials };
   }

@@ -12,15 +12,33 @@ import { login, principal, requireRole, saveApiKey } from './auth.js';
 import { seal, unseal } from './crypto.js';
 import { credentialsFor, saveCredentials } from './credentials.js';
 import { providers } from './providers/registry.js';
+import type { ProviderEvent } from './providers/types.js';
 import './providers/index.js';
+
+import { readFileSync } from 'node:fs';
+import { getMediaFile } from './media.js';
+import { registerImageRoutes } from './routes/images.js';
+import { registerMessagesRoutes } from './routes/messages.js';
+import { registerEditableFilesRoutes } from './routes/editable_files.js';
+import { registerOAuthRoutes } from './routes/oauth.js';
 
 seedWebDefaults();
 
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
 await app.register(cookie);
-const localOrigins = new Set([config.origin, 'http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:5174', 'http://localhost:5174']);
-await app.register(cors, { origin: (origin, done) => done(null, !origin || localOrigins.has(origin)), credentials: true });
+await app.register(cors, {
+  origin: true,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id', 'x-admin-token', 'x-api-key', 'anthropic-version', 'x-requested-with'],
+});
 await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });
+
+await registerImageRoutes(app);
+await registerMessagesRoutes(app);
+await registerEditableFilesRoutes(app);
+await registerOAuthRoutes(app);
+
 
 const chatRequest = z.object({
   model: z.string().min(1),
@@ -33,30 +51,102 @@ const accountInput = z.object({ provider: z.enum(['chatgpt', 'kimi', 'deepseek',
 
 app.setErrorHandler((error, request, reply) => {
   request.log.error(error);
-  reply.status((error as { statusCode?: number }).statusCode ?? 500).send({ error: { message: error instanceof Error ? error.message : 'Internal error', type: 'any2api_error' } });
+  const errObj = error as { statusCode?: number; status?: number };
+  const statusCode = errObj.statusCode ?? errObj.status ?? 500;
+  reply.status(statusCode).send({
+    error: {
+      message: error instanceof Error ? error.message : 'Internal error',
+      type: statusCode === 401 ? 'authentication_error' : statusCode === 404 ? 'invalid_request_error' : statusCode === 503 ? 'service_unavailable' : 'api_error',
+      param: null,
+      code: statusCode
+    }
+  });
 });
 
 app.get('/health', async () => ({ status: 'ok', now: new Date().toISOString() }));
 app.get('/v1/models', async () => modelList());
 
+app.get('/api/media/:filename', async (request, reply) => {
+  const { filename } = request.params as { filename: string };
+  const { path: filePath, exists } = getMediaFile(filename);
+  if (!exists) {
+    reply.status(404).send({ error: { message: 'Media file not found' } });
+    return;
+  }
+  const ext = filename.split('.').pop()?.toLowerCase() || 'png';
+  const mime = ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'mp4' ? 'video/mp4' : 'application/octet-stream';
+  const buffer = readFileSync(filePath);
+  reply.header('Content-Type', mime);
+  reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+  reply.header('Access-Control-Allow-Origin', '*');
+  return reply.send(buffer);
+});
+
 async function streamChat(request: z.infer<typeof chatRequest>, reply: FastifyReply, options: { kind: 'api' | 'connection_test'; apiKeyId?: string; accountId?: string }) {
+  const iterator = execute({
+    model: request.model,
+    messages: request.messages as Array<{ role: string; content: unknown }>,
+    stream: true,
+    reasoning: request.reasoning,
+    webSearch: request.web_search
+  }, options);
+
+  let firstResult: IteratorResult<{ requestId: string; item: ProviderEvent }> | null = null;
+  try {
+    firstResult = await iterator.next();
+  } catch (error) {
+    const statusCode = (error as { statusCode?: number }).statusCode ?? 502;
+    const message = error instanceof Error ? error.message : 'Gateway error';
+    return reply.status(statusCode).send({
+      error: {
+        message,
+        type: statusCode === 401 ? 'authentication_error' : statusCode === 404 ? 'invalid_request_error' : statusCode === 503 ? 'service_unavailable' : 'api_error',
+        param: null,
+        code: statusCode
+      }
+    });
+  }
+
   reply.hijack();
-  reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  const origin = (reply.request.headers.origin as string | undefined) || '*';
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-session-id, x-admin-token, x-api-key, anthropic-version',
+  });
+
   let sentRole = false;
   try {
-    for await (const { requestId, item } of execute({ model: request.model, messages: request.messages as Array<{ role: string; content: unknown }>, stream: true, reasoning: request.reasoning, webSearch: request.web_search }, options)) {
+    let current = firstResult;
+    while (!current.done) {
+      const { requestId, item } = current.value;
       const delta: Record<string, unknown> = {};
       if (!sentRole) { delta.role = 'assistant'; sentRole = true; }
       if (item.type === 'message.delta') delta.content = item.text;
       if (item.type === 'reasoning.summary.delta') delta.reasoning_content = item.text;
       if (item.type === 'search.citation') delta.annotations = [{ type: 'url_citation', url: item.url, title: item.title }];
       if (item.type === 'image.created') delta.content = `![generated image](${item.url})\n\n`;
-      reply.raw.write(`data: ${JSON.stringify({ id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: request.model, choices: [{ index: 0, delta, finish_reason: item.type === 'completed' ? 'stop' : null }] })}\n\n`);
+
+      reply.raw.write(`data: ${JSON.stringify({
+        id: requestId,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: request.model,
+        choices: [{ index: 0, delta, finish_reason: item.type === 'completed' ? 'stop' : null }]
+      })}\n\n`);
+
+      current = await iterator.next();
     }
     reply.raw.write('data: [DONE]\n\n');
   } catch (error) {
-    reply.raw.write(`data: ${JSON.stringify({ error: { message: error instanceof Error ? error.message : 'Gateway error' } })}\n\n`);
-  } finally { reply.raw.end(); }
+    reply.raw.write(`data: ${JSON.stringify({ error: { message: error instanceof Error ? error.message : 'Gateway error', type: 'api_error', code: 502 } })}\n\n`);
+  } finally {
+    reply.raw.end();
+  }
 }
 
 app.post('/v1/chat/completions', async (request, reply) => {
@@ -78,8 +168,8 @@ app.post('/api/auth/login', async (request, reply) => {
   const body = z.object({ username: z.string().trim().min(1), password: z.string().min(1) }).parse(request.body);
   const session = login(body.username, body.password);
   if (!session) throw Object.assign(new Error('Invalid username or password'), { statusCode: 401 });
-  reply.setCookie('a2a_session', session.token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 7 * 24 * 60 * 60 });
-  return { user: session.user };
+  reply.setCookie('a2a_session', session.token, { httpOnly: true, sameSite: 'none', secure: true, path: '/', maxAge: 7 * 24 * 60 * 60 });
+  return { user: session.user, token: session.token };
 });
 app.post('/api/auth/logout', async (_request, reply) => { reply.clearCookie('a2a_session', { path: '/' }); return { ok: true }; });
 app.get('/api/auth/me', async (request) => { const actor = requireRole(request, ['owner', 'admin', 'operator', 'auditor']); return actor; });
@@ -145,6 +235,13 @@ app.patch('/api/accounts/:id', async (request) => {
   if (body.credentials && Object.keys(body.credentials).length) saveCredentials(accountId, { ...credentialsFor(accountId), ...body.credentials });
   return { ok: true };
 });
+app.delete('/api/accounts/:id', async (request) => {
+  requireRole(request, ['owner', 'admin']);
+  const { id: accountId } = request.params as { id: string };
+  db.prepare('DELETE FROM account_credentials WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM provider_accounts WHERE id = ?').run(accountId);
+  return { ok: true };
+});
 app.post('/api/accounts/:id/test', async (request) => {
   requireRole(request, ['owner', 'admin', 'operator']); const { id: accountId } = request.params as { id: string };
   const account = db.prepare('SELECT * FROM provider_accounts WHERE id = ?').get(accountId) as import('./accounts.js').Account & { provider: string; name: string } | undefined;
@@ -166,11 +263,646 @@ app.patch('/api/users/:id', async (request) => { const actor = requireRole(reque
 app.get('/api/routes', async (request) => { requireRole(request, ['owner', 'admin', 'operator', 'auditor']); return db.prepare(`SELECT r.id, r.public_model, r.enabled, r.priority, m.provider, m.upstream_id, m.capabilities_json FROM routes r JOIN models m ON m.id = r.model_id ORDER BY r.priority DESC, r.public_model`).all(); });
 app.post('/api/routes', async (request) => { requireRole(request, ['owner', 'admin', 'operator']); const body = z.object({ publicModel: z.string().trim().min(1), provider: z.enum(['chatgpt', 'kimi', 'deepseek', 'glm', 'qwen', 'jimeng']), upstreamModel: z.string().trim().min(1), priority: z.number().int().min(0).max(100).default(50), enabled: z.boolean().default(true), capabilities: z.object({ input: z.array(z.enum(['text', 'image'])).default(['text']), output: z.array(z.enum(['text', 'image', 'video'])).default(['text']), streaming: z.boolean().default(true), reasoningSummary: z.boolean().optional(), webSearch: z.boolean().optional(), imageGeneration: z.boolean().optional() }).default({ input: ['text'], output: ['text'], streaming: true }) }).parse(request.body); upsertDiscoveredModel(body.provider, body.upstreamModel, body.capabilities, body.publicModel); db.prepare('UPDATE routes SET priority = ?, enabled = ? WHERE public_model = ?').run(body.priority, body.enabled ? 1 : 0, body.publicModel); return { ok: true }; });
 app.patch('/api/routes/:id', async (request) => { requireRole(request, ['owner', 'admin', 'operator']); const { id } = request.params as { id: string }; const body = z.object({ publicModel: z.string().trim().min(1).optional(), provider: z.enum(['chatgpt', 'kimi', 'deepseek', 'glm', 'qwen', 'jimeng']).optional(), upstreamModel: z.string().trim().min(1).optional(), enabled: z.boolean().optional(), priority: z.number().int().min(0).max(100).optional() }).parse(request.body); const row = db.prepare('SELECT r.id, r.model_id FROM routes r WHERE r.id = ?').get(id) as { id: string; model_id: string } | undefined; if (!row) throw Object.assign(new Error('Route not found'), { statusCode: 404 }); const routeAssignments: string[] = []; const routeValues: Array<string | number> = []; if (body.publicModel !== undefined) { routeAssignments.push('public_model = ?'); routeValues.push(body.publicModel); } if (body.enabled !== undefined) { routeAssignments.push('enabled = ?'); routeValues.push(body.enabled ? 1 : 0); } if (body.priority !== undefined) { routeAssignments.push('priority = ?'); routeValues.push(body.priority); } if (routeAssignments.length) { routeValues.push(id); db.prepare(`UPDATE routes SET ${routeAssignments.join(', ')} WHERE id = ?`).run(...routeValues); } const modelAssignments: string[] = []; const modelValues: string[] = []; if (body.provider !== undefined) { modelAssignments.push('provider = ?'); modelValues.push(body.provider); } if (body.upstreamModel !== undefined) { modelAssignments.push('upstream_id = ?'); modelValues.push(body.upstreamModel); } if (modelAssignments.length) { modelValues.push(row.model_id); db.prepare(`UPDATE models SET ${modelAssignments.join(', ')} WHERE id = ?`).run(...modelValues); } return { ok: true }; });
-app.get('/api/analytics', async (request) => { requireRole(request, ['owner', 'admin', 'operator', 'auditor']); const since = Date.now() - 7 * 86_400_000; return { summary: db.prepare(`SELECT COUNT(*) AS requests, SUM(status = 'completed') AS completed, SUM(status = 'failed') AS failed, ROUND(AVG(latency_ms)) AS latency FROM request_logs WHERE started_at > ?`).get(since), byProvider: db.prepare(`SELECT COALESCE(provider, 'unrouted') AS provider, COUNT(*) AS requests, SUM(status = 'failed') AS failed, ROUND(AVG(latency_ms)) AS latency FROM request_logs WHERE started_at > ? GROUP BY provider ORDER BY requests DESC`).all(since) }; });
+function parseTimeFilter(query: Record<string, string | undefined>) {
+  const now = Date.now();
+  let startTime = now - 7 * 86_400_000;
+  let endTime = now;
+  const timeRange = query.timeRange || '7d';
+
+  if (timeRange === '1h') {
+    startTime = now - 3600_000;
+  } else if (timeRange === 'today') {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    startTime = today.getTime();
+  } else if (timeRange === '24h') {
+    startTime = now - 86_400_000;
+  } else if (timeRange === '7d') {
+    startTime = now - 7 * 86_400_000;
+  } else if (timeRange === '30d') {
+    startTime = now - 30 * 86_400_000;
+  } else if (timeRange === 'all') {
+    startTime = 0;
+  } else if (timeRange === 'custom') {
+    if (query.startTime) startTime = Number(query.startTime) || startTime;
+    if (query.endTime) endTime = Number(query.endTime) || endTime;
+  }
+  return { startTime, endTime, timeRange };
+}
+
+function buildLogFilters(query: Record<string, string | undefined>, prefix = 'l.') {
+  const { startTime, endTime, timeRange } = parseTimeFilter(query);
+  const conditions: string[] = [`${prefix}started_at >= ?`, `${prefix}started_at <= ?`];
+  const params: Array<string | number> = [startTime, endTime];
+
+  if (query.provider && query.provider !== 'all') {
+    conditions.push(`${prefix}provider = ?`);
+    params.push(query.provider);
+  }
+  if (query.apiKeyId && query.apiKeyId !== 'all') {
+    if (query.apiKeyId === 'test') {
+      conditions.push(`${prefix}api_key_id IS NULL`);
+    } else {
+      conditions.push(`${prefix}api_key_id = ?`);
+      params.push(query.apiKeyId);
+    }
+  }
+  if (query.accountId && query.accountId !== 'all') {
+    conditions.push(`${prefix}account_id = ?`);
+    params.push(query.accountId);
+  }
+  if (query.model && query.model !== 'all') {
+    conditions.push(`${prefix}model = ?`);
+    params.push(query.model);
+  }
+  if (query.status && query.status !== 'all') {
+    conditions.push(`${prefix}status = ?`);
+    params.push(query.status);
+  }
+  if (query.kind && query.kind !== 'all') {
+    conditions.push(`${prefix}kind = ?`);
+    params.push(query.kind);
+  }
+  if (query.keyword) {
+    conditions.push(`(${prefix}id LIKE ? OR ${prefix}model LIKE ? OR ${prefix}provider LIKE ?)`);
+    const kw = `%${query.keyword}%`;
+    params.push(kw, kw, kw);
+  }
+  return { conditions: conditions.join(' AND '), params, startTime, endTime, timeRange };
+}
+
+app.get('/api/analytics', async (request) => {
+  requireRole(request, ['owner', 'admin', 'operator', 'auditor']);
+  const query = request.query as Record<string, string | undefined>;
+  const { conditions, params, startTime, endTime, timeRange } = buildLogFilters(query, 'l.');
+
+  const summaryRaw = db.prepare(`
+    SELECT 
+      COUNT(*) AS requests,
+      SUM(l.status = 'completed') AS completed,
+      SUM(l.status = 'failed') AS failed,
+      ROUND(AVG(l.latency_ms)) AS avg_latency,
+      MIN(l.latency_ms) AS min_latency,
+      MAX(l.latency_ms) AS max_latency,
+      COUNT(DISTINCT l.api_key_id) AS active_keys,
+      COUNT(DISTINCT l.account_id) AS active_accounts
+    FROM request_logs l
+    WHERE ${conditions}
+  `).get(...params) as {
+    requests: number;
+    completed: number;
+    failed: number;
+    avg_latency: number | null;
+    min_latency: number | null;
+    max_latency: number | null;
+    active_keys: number;
+    active_accounts: number;
+  };
+
+  const requests = summaryRaw?.requests || 0;
+  const completed = summaryRaw?.completed || 0;
+  const failed = summaryRaw?.failed || 0;
+  const success_rate = requests > 0 ? Math.round((completed / requests) * 1000) / 10 : 100;
+
+  let p95_latency = summaryRaw?.avg_latency || 0;
+  if (requests > 0) {
+    const latencies = db.prepare(`
+      SELECT l.latency_ms 
+      FROM request_logs l 
+      WHERE ${conditions} AND l.latency_ms IS NOT NULL 
+      ORDER BY l.latency_ms ASC
+    `).all(...params) as Array<{ latency_ms: number }>;
+    if (latencies.length > 0) {
+      const idx = Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95));
+      p95_latency = latencies[idx].latency_ms;
+    }
+  }
+
+  const imageCountRaw = db.prepare(`
+    SELECT COUNT(e.id) AS image_count
+    FROM request_events e
+    JOIN request_logs l ON l.id = e.request_id
+    WHERE e.event = 'upstream.image' AND ${conditions}
+  `).get(...params) as { image_count: number } | undefined;
+  const image_count = imageCountRaw?.image_count || 0;
+
+  const span = Math.max(1000, endTime - startTime);
+  const bucketMs = span <= 4 * 3600_000 ? 5 * 60_000 : span <= 48 * 3600_000 ? 3600_000 : 86_400_000;
+  const timeSeriesRows = db.prepare(`
+    SELECT 
+      CAST(l.started_at / ? AS INTEGER) * ? AS bucket_time,
+      COUNT(*) AS requests,
+      SUM(l.status = 'completed') AS completed,
+      SUM(l.status = 'failed') AS failed,
+      ROUND(AVG(l.latency_ms)) AS avg_latency
+    FROM request_logs l
+    WHERE ${conditions}
+    GROUP BY bucket_time
+    ORDER BY bucket_time ASC
+  `).all(bucketMs, bucketMs, ...params) as Array<{
+    bucket_time: number;
+    requests: number;
+    completed: number;
+    failed: number;
+    avg_latency: number | null;
+  }>;
+
+  const timeSeries = timeSeriesRows.map((row) => {
+    const d = new Date(row.bucket_time);
+    let label = '';
+    if (bucketMs < 3600_000) {
+      label = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    } else if (bucketMs < 86_400_000) {
+      label = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}h`;
+    } else {
+      label = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    const reqs = row.requests || 0;
+    const comps = row.completed || 0;
+    return {
+      time: label,
+      timestamp: row.bucket_time,
+      requests: reqs,
+      completed: comps,
+      failed: row.failed || 0,
+      success_rate: reqs > 0 ? Math.round((comps / reqs) * 1000) / 10 : 100,
+      avg_latency: row.avg_latency || 0,
+    };
+  });
+
+  const byProviderRows = db.prepare(`
+    SELECT 
+      COALESCE(l.provider, 'unrouted') AS provider,
+      COUNT(l.id) AS requests,
+      SUM(l.status = 'completed') AS completed,
+      SUM(l.status = 'failed') AS failed,
+      ROUND(AVG(l.latency_ms)) AS avg_latency
+    FROM request_logs l
+    WHERE ${conditions}
+    GROUP BY l.provider
+    ORDER BY requests DESC
+  `).all(...params) as Array<{
+    provider: string;
+    requests: number;
+    completed: number;
+    failed: number;
+    avg_latency: number | null;
+  }>;
+
+  const byProvider = byProviderRows.map((r) => ({
+    provider: r.provider,
+    requests: r.requests,
+    completed: r.completed || 0,
+    failed: r.failed || 0,
+    success_rate: r.requests > 0 ? Math.round(((r.completed || 0) / r.requests) * 1000) / 10 : 100,
+    avg_latency: r.avg_latency || 0,
+  }));
+
+  const byApiKeyRows = db.prepare(`
+    SELECT 
+      l.api_key_id,
+      COALESCE(k.name, CASE WHEN l.kind = 'connection_test' THEN '🛠️ 控制台测试' ELSE '🌐 系统直接调用' END) AS key_name,
+      COALESCE(k.key_prefix, '—') AS key_prefix,
+      COALESCE(k.role, 'system') AS role,
+      k.last_used_at,
+      COUNT(l.id) AS requests,
+      SUM(l.status = 'completed') AS completed,
+      SUM(l.status = 'failed') AS failed,
+      ROUND(AVG(l.latency_ms)) AS avg_latency
+    FROM request_logs l
+    LEFT JOIN api_keys k ON k.id = l.api_key_id
+    WHERE ${conditions}
+    GROUP BY l.api_key_id
+    ORDER BY requests DESC
+  `).all(...params) as Array<{
+    api_key_id: string | null;
+    key_name: string;
+    key_prefix: string;
+    role: string;
+    last_used_at: number | null;
+    requests: number;
+    completed: number;
+    failed: number;
+    avg_latency: number | null;
+  }>;
+
+  const byApiKey = byApiKeyRows.map((r) => ({
+    api_key_id: r.api_key_id,
+    key_name: r.key_name,
+    key_prefix: r.key_prefix,
+    role: r.role,
+    last_used_at: r.last_used_at,
+    requests: r.requests,
+    completed: r.completed || 0,
+    failed: r.failed || 0,
+    success_rate: r.requests > 0 ? Math.round(((r.completed || 0) / r.requests) * 1000) / 10 : 100,
+    avg_latency: r.avg_latency || 0,
+  }));
+
+  const byAccountRows = db.prepare(`
+    SELECT 
+      l.account_id,
+      COALESCE(a.name, '未分配 / 自动') AS account_name,
+      COALESCE(l.provider, a.provider, 'unknown') AS provider,
+      COALESCE(a.priority, 50) AS priority,
+      COALESCE(a.status, 'ready') AS status,
+      COUNT(l.id) AS requests,
+      SUM(l.status = 'completed') AS completed,
+      SUM(l.status = 'failed') AS failed,
+      ROUND(AVG(l.latency_ms)) AS avg_latency
+    FROM request_logs l
+    LEFT JOIN provider_accounts a ON a.id = l.account_id
+    WHERE ${conditions}
+    GROUP BY l.account_id
+    ORDER BY requests DESC
+  `).all(...params) as Array<{
+    account_id: string | null;
+    account_name: string;
+    provider: string;
+    priority: number;
+    status: string;
+    requests: number;
+    completed: number;
+    failed: number;
+    avg_latency: number | null;
+  }>;
+
+  const byAccount = byAccountRows.map((r) => ({
+    account_id: r.account_id,
+    account_name: r.account_name,
+    provider: r.provider,
+    priority: r.priority,
+    status: r.status,
+    requests: r.requests,
+    completed: r.completed || 0,
+    failed: r.failed || 0,
+    success_rate: r.requests > 0 ? Math.round(((r.completed || 0) / r.requests) * 1000) / 10 : 100,
+    avg_latency: r.avg_latency || 0,
+  }));
+
+  const byModelRows = db.prepare(`
+    SELECT 
+      COALESCE(l.model, 'unknown') AS model,
+      COALESCE(l.provider, 'unknown') AS provider,
+      COUNT(l.id) AS requests,
+      SUM(l.status = 'completed') AS completed,
+      SUM(l.status = 'failed') AS failed,
+      ROUND(AVG(l.latency_ms)) AS avg_latency
+    FROM request_logs l
+    WHERE ${conditions}
+    GROUP BY l.model
+    ORDER BY requests DESC
+  `).all(...params) as Array<{
+    model: string;
+    provider: string;
+    requests: number;
+    completed: number;
+    failed: number;
+    avg_latency: number | null;
+  }>;
+
+  const byModel = byModelRows.map((r) => ({
+    model: r.model,
+    provider: r.provider,
+    requests: r.requests,
+    completed: r.completed || 0,
+    failed: r.failed || 0,
+    success_rate: r.requests > 0 ? Math.round(((r.completed || 0) / r.requests) * 1000) / 10 : 100,
+    avg_latency: r.avg_latency || 0,
+  }));
+
+  const filterOptions = {
+    providers: ['chatgpt', 'kimi', 'deepseek', 'glm', 'qwen', 'jimeng'],
+    apiKeys: db.prepare('SELECT id, name, key_prefix FROM api_keys ORDER BY created_at DESC').all() as Array<{ id: string; name: string; key_prefix: string }>,
+    accounts: db.prepare('SELECT id, name, provider FROM provider_accounts ORDER BY provider, priority DESC').all() as Array<{ id: string; name: string; provider: string }>,
+    models: db.prepare('SELECT DISTINCT public_model AS id, m.provider FROM routes r JOIN models m ON m.id = r.model_id ORDER BY public_model').all() as Array<{ id: string; provider: string }>,
+  };
+
+  return {
+    timeRange,
+    startTime,
+    endTime,
+    summary: {
+      requests,
+      completed,
+      failed,
+      success_rate,
+      avg_latency: summaryRaw?.avg_latency || 0,
+      min_latency: summaryRaw?.min_latency || 0,
+      max_latency: summaryRaw?.max_latency || 0,
+      p95_latency,
+      image_count,
+      active_keys: summaryRaw?.active_keys || 0,
+      active_accounts: summaryRaw?.active_accounts || 0,
+    },
+    timeSeries,
+    byProvider,
+    byApiKey,
+    byAccount,
+    byModel,
+    filterOptions,
+  };
+});
+
+app.get('/api/logs/search', async (request) => {
+  requireRole(request, ['owner', 'admin', 'operator', 'auditor']);
+  const query = request.query as Record<string, string | undefined>;
+  const { conditions, params } = buildLogFilters(query, 'l.');
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.min(100, Math.max(10, Number(query.limit) || 30));
+  const offset = (page - 1) * limit;
+
+  const totalRaw = db.prepare(`SELECT COUNT(*) AS total FROM request_logs l WHERE ${conditions}`).get(...params) as { total: number };
+  const total = totalRaw?.total || 0;
+
+  const rows = db.prepare(`
+    SELECT 
+      l.*,
+      a.name AS account_name,
+      k.name AS api_key_name,
+      k.key_prefix,
+      (
+        SELECT re.details_json 
+        FROM request_events re 
+        WHERE re.request_id = l.id AND re.event = 'request.sent' 
+        ORDER BY re.id ASC 
+        LIMIT 1
+      ) AS sent_json,
+      (
+        SELECT re.details_json 
+        FROM request_events re 
+        WHERE re.request_id = l.id AND (re.event = 'upstream.message' OR re.event = 'upstream.reasoning')
+        ORDER BY re.id DESC 
+        LIMIT 1
+      ) AS reply_json,
+      (
+        SELECT COUNT(*) 
+        FROM request_events re 
+        WHERE re.request_id = l.id
+      ) AS events_count,
+      (
+        SELECT COUNT(*) 
+        FROM request_events re 
+        WHERE re.request_id = l.id AND re.event = 'upstream.image'
+      ) AS image_events_count
+    FROM request_logs l
+    LEFT JOIN provider_accounts a ON a.id = l.account_id
+    LEFT JOIN api_keys k ON k.id = l.api_key_id
+    WHERE ${conditions}
+    ORDER BY l.started_at DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset) as Array<{
+    id: string;
+    kind: string;
+    api_key_id: string | null;
+    account_id: string | null;
+    provider: string | null;
+    model: string | null;
+    status: string;
+    http_status: number | null;
+    latency_ms: number | null;
+    started_at: number;
+    completed_at: number | null;
+    account_name: string | null;
+    api_key_name: string | null;
+    key_prefix: string | null;
+    sent_json: string | null;
+    reply_json: string | null;
+    events_count: number;
+    image_events_count: number;
+  }>;
+
+  const items = rows.map((r) => {
+    let promptPreview = '';
+    let replyPreview = '';
+    if (r.sent_json) {
+      try {
+        const sentData = JSON.parse(r.sent_json);
+        if (Array.isArray(sentData.messages)) {
+          const userMsg = [...sentData.messages].reverse().find((m: any) => m?.role === 'user');
+          if (userMsg && userMsg.content) {
+            promptPreview = typeof userMsg.content === 'string' ? userMsg.content : JSON.stringify(userMsg.content);
+          }
+        }
+      } catch {}
+    }
+    if (r.reply_json) {
+      try {
+        const replyData = JSON.parse(r.reply_json);
+        if (replyData.content) {
+          replyPreview = typeof replyData.content === 'string' ? replyData.content : JSON.stringify(replyData.content);
+        }
+      } catch {}
+    }
+
+    return {
+      id: r.id,
+      kind: r.kind,
+      provider: r.provider,
+      model: r.model,
+      status: r.status,
+      http_status: r.http_status,
+      latency_ms: r.latency_ms,
+      started_at: r.started_at,
+      completed_at: r.completed_at,
+      account_id: r.account_id,
+      account_name: r.account_name,
+      api_key_id: r.api_key_id,
+      api_key_name: r.api_key_name,
+      key_prefix: r.key_prefix,
+      prompt_preview: promptPreview ? promptPreview.slice(0, 120) : '',
+      reply_preview: replyPreview ? replyPreview.slice(0, 120) : '',
+      events_count: r.events_count,
+      has_images: r.image_events_count > 0,
+    };
+  });
+
+  return { total, page, limit, items };
+});
+
+app.get('/api/logs/:requestId/detail', async (request) => {
+  requireRole(request, ['owner', 'admin', 'operator', 'auditor']);
+  const { requestId } = request.params as { requestId: string };
+  const log = db.prepare(`
+    SELECT l.*, a.name AS account_name, a.priority AS account_priority, a.status AS account_status,
+           k.name AS api_key_name, k.key_prefix, k.role AS api_key_role
+    FROM request_logs l
+    LEFT JOIN provider_accounts a ON a.id = l.account_id
+    LEFT JOIN api_keys k ON k.id = l.api_key_id
+    WHERE l.id = ?
+  `).get(requestId) as any;
+
+  if (!log) throw Object.assign(new Error('Log not found'), { statusCode: 404 });
+
+  const rawEvents = db.prepare(`
+    SELECT id, request_id, at, level, event, message, details_json
+    FROM request_events
+    WHERE request_id = ?
+    ORDER BY id ASC
+  `).all(requestId) as Array<{
+    id: number;
+    request_id: string;
+    at: number;
+    level: string;
+    event: string;
+    message: string;
+    details_json: string;
+  }>;
+
+  let promptMessages: any[] = [];
+  let assistantReply = '';
+  let reasoning = '';
+  const citations: any[] = [];
+  const images: string[] = [];
+  let failureError = '';
+
+  const events = rawEvents.map((evt) => {
+    let details: Record<string, unknown> | undefined;
+    try {
+      details = JSON.parse(evt.details_json);
+    } catch {}
+
+    if (evt.event === 'request.sent' && details && Array.isArray(details.messages)) {
+      promptMessages = details.messages;
+    }
+    if (evt.event === 'upstream.message' && details && typeof details.content === 'string') {
+      assistantReply = details.content;
+    }
+    if (evt.event === 'upstream.reasoning' && details && typeof details.content === 'string') {
+      reasoning = details.content;
+    }
+    if (evt.event === 'upstream.citation' && details) {
+      citations.push(details);
+    }
+    if (evt.event === 'upstream.image' && details) {
+      if (typeof details.url === 'string') images.push(details.url);
+      else if (typeof details.media_url === 'string') images.push(details.media_url);
+    }
+    if (evt.level === 'error') {
+      failureError = evt.message || (details && typeof details.error === 'string' ? String(details.error) : '');
+    }
+
+    return {
+      id: evt.id,
+      request_id: evt.request_id,
+      at: evt.at,
+      level: evt.level,
+      event: evt.event,
+      message: evt.message,
+      details,
+    };
+  });
+
+  return {
+    log,
+    events,
+    promptMessages,
+    assistantReply,
+    reasoning,
+    citations,
+    images,
+    failureError,
+  };
+});
+app.get('/api/image-logs', async (request) => {
+  requireRole(request, ['owner', 'admin', 'operator', 'auditor']);
+  const rows = db.prepare(`
+    SELECT 
+      e.id AS event_id,
+      e.at,
+      e.details_json,
+      l.id AS request_id,
+      l.kind,
+      l.provider,
+      l.model,
+      l.status,
+      l.latency_ms,
+      l.started_at,
+      a.name AS account_name,
+      k.name AS api_key_name,
+      k.key_prefix,
+      (
+        SELECT re.details_json 
+        FROM request_events re 
+        WHERE re.request_id = l.id AND re.event = 'request.sent' 
+        ORDER BY re.id ASC 
+        LIMIT 1
+      ) AS sent_details_json
+    FROM request_events e
+    JOIN request_logs l ON l.id = e.request_id
+    LEFT JOIN provider_accounts a ON a.id = l.account_id
+    LEFT JOIN api_keys k ON k.id = l.api_key_id
+    WHERE e.event = 'upstream.image'
+    ORDER BY e.at DESC
+    LIMIT 300
+  `).all() as Array<{
+    event_id: number;
+    at: number;
+    details_json: string;
+    request_id: string;
+    kind: string;
+    provider: string | null;
+    model: string | null;
+    status: string;
+    latency_ms: number | null;
+    started_at: number;
+    account_name: string | null;
+    api_key_name: string | null;
+    key_prefix: string | null;
+    sent_details_json: string | null;
+  }>;
+
+  return rows.map((row) => {
+    let imageUrl = '';
+    try {
+      const parsed = JSON.parse(row.details_json) as { url?: string };
+      imageUrl = parsed.url || '';
+    } catch {}
+
+    let prompt = '';
+    if (row.sent_details_json) {
+      try {
+        const sent = JSON.parse(row.sent_details_json) as { messages?: Array<{ role?: string; content?: unknown }> };
+        if (Array.isArray(sent.messages)) {
+          const userMsg = [...sent.messages].reverse().find(m => m.role === 'user') ?? sent.messages.at(-1);
+          if (userMsg && userMsg.content) {
+            prompt = typeof userMsg.content === 'string' ? userMsg.content : JSON.stringify(userMsg.content);
+          }
+        }
+      } catch {}
+    }
+
+    return {
+      id: `img_${row.event_id}`,
+      url: imageUrl,
+      prompt,
+      model: row.model ?? 'image-gen',
+      provider: row.provider ?? 'unknown',
+      kind: row.kind,
+      status: row.status,
+      latency_ms: row.latency_ms,
+      created_at: row.at,
+      request_id: row.request_id,
+      account_name: row.account_name,
+      api_key_name: row.api_key_name,
+      key_prefix: row.key_prefix
+    };
+  });
+});
 app.get('/api/logs', async (request) => { requireRole(request, ['owner', 'admin', 'operator', 'auditor']); return db.prepare('SELECT l.*, a.name AS account_name, k.name AS api_key_name FROM request_logs l LEFT JOIN provider_accounts a ON a.id = l.account_id LEFT JOIN api_keys k ON k.id = l.api_key_id ORDER BY l.started_at DESC LIMIT 200').all(); });
 app.get('/api/logs/:requestId/events', async (request) => { requireRole(request, ['owner', 'admin', 'operator', 'auditor']); const { requestId } = request.params as { requestId: string }; return db.prepare('SELECT id, at, level, event, message, details_json FROM request_events WHERE request_id = ? ORDER BY id').all(requestId); });
 app.get('/api/logs/live', async (request, reply) => {
-  requireRole(request, ['owner', 'admin', 'operator', 'auditor']); reply.hijack(); reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  requireRole(request, ['owner', 'admin', 'operator', 'auditor']);
+  reply.hijack();
+  const origin = (request.headers.origin as string | undefined) || '*';
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-session-id, x-admin-token, x-api-key',
+  });
   const stop = onEvent((item) => reply.raw.write(`data: ${JSON.stringify(item)}\n\n`));
   request.raw.on('close', stop);
 });

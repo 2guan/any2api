@@ -5,8 +5,13 @@ export type Credentials = Record<string, string>;
 
 export function credentialsFor(accountId: string): Credentials {
   const row = db.prepare('SELECT ciphertext, iv, tag FROM account_credentials WHERE account_id = ?').get(accountId) as { ciphertext: string; iv: string; tag: string } | undefined;
-  if (!row) throw new Error('Account credentials are missing');
-  return unseal<Credentials>(row);
+  if (!row) return {};
+  try {
+    return unseal<Credentials>(row);
+  } catch (error) {
+    console.warn(`[Credentials] Unable to decrypt credentials for account ${accountId}:`, error instanceof Error ? error.message : error);
+    return {};
+  }
 }
 
 export function saveCredentials(accountId: string, credentials: Credentials) {

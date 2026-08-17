@@ -1,8 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const dataDir = resolve(process.env.ANY2API_DATA_DIR ?? './data');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const defaultDataDir = resolve(__dirname, '../../../data');
+const dataDir = resolve(process.env.ANY2API_DATA_DIR ?? defaultDataDir);
 mkdirSync(dataDir, { recursive: true });
 
 function encryptionKey() {
@@ -27,12 +31,12 @@ function sessionSecret() {
 }
 
 export const config = {
-  host: process.env.ANY2API_HOST ?? '127.0.0.1',
-  port: Number(process.env.ANY2API_PORT ?? 8787),
+  host: process.env.ANY2API_HOST ?? '0.0.0.0',
+  port: Number(process.env.ANY2API_PORT ?? 8788),
   origin: process.env.ANY2API_ORIGIN ?? 'http://localhost:5173',
   dbPath: resolve(dataDir, 'any2api.sqlite'),
   encryptionKey: encryptionKey(),
   ownerUsername: process.env.ANY2API_OWNER_USERNAME ?? 'owner',
-  ownerPassword: process.env.ANY2API_OWNER_PASSWORD ?? '',
+  ownerPassword: process.env.ANY2API_OWNER_PASSWORD || 'admin123',
   sessionSecret: sessionSecret()
 };

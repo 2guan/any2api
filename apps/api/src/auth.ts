@@ -29,6 +29,12 @@ export function principal(request: FastifyRequest): Principal | null {
   }
   const bearer = request.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (!bearer) return null;
+
+  // 1. Check if bearer is a user session token (e.g. from frontend login localStorage)
+  const sessionItem = db.prepare(`SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ?`).get(hash(bearer), Date.now()) as { id: string; username: string; role: string } | undefined;
+  if (sessionItem) return { ...sessionItem, type: 'session' };
+
+  // 2. Check if bearer is an API Key
   const key = db.prepare(`SELECT id, role FROM api_keys WHERE key_hash = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)`)
     .get(hash(bearer), Date.now()) as { id: string; role: string } | undefined;
   if (!key) return null;

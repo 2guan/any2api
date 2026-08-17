@@ -8,3 +8,5 @@ data/
 *.sqlite-*
 playwright-report/
 test-results/
+.DS_Store
+QuickQR/
