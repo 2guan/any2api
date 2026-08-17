@@ -20,10 +20,10 @@ RUN npm run build
 FROM node:22-bookworm-slim AS runner
 
 WORKDIR /app
-ENV NODE_ENV=production
-ENV ANY2API_HOST=0.0.0.0
-ENV ANY2API_PORT=8788
-ENV ANY2API_DATA_DIR=/app/data
+ENV NODE_ENV=production \
+    ANY2API_HOST=0.0.0.0 \
+    ANY2API_PORT=8788 \
+    ANY2API_DATA_DIR=/app/data
 
 # 安装 Playwright / Chromium 所需的系统依赖库
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -63,12 +63,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# 从构建阶段复制必要文件
+# 从构建阶段复制必要文件与完整工作区
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/api/package*.json ./apps/api/
-COPY --from=builder /app/apps/api/dist ./apps/api/dist
-COPY --from=builder /app/apps/admin/dist ./apps/admin/dist
+COPY --from=builder /app/apps ./apps
 
 # 安装 Playwright Chromium 浏览器内核
 RUN npx playwright install chromium
