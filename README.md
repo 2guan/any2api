@@ -97,7 +97,9 @@ Any2API (Monorepo)
 
 ### 方式一：🐳 Docker Compose 一键部署（推荐）
 
-本项目已提供多阶段构建优化的 `Dockerfile` 与 `docker-compose.yml`，数据目录 `./data` 会自动挂载到宿主机以实现数据库、加密密钥与媒体资产的持久化存储。
+本项目已接入 **GitHub Actions CI/CD 自动打包**，发布镜像至 GitHub 容器镜像仓库（`ghcr.io/2guan/any2api:latest`）。`docker-compose.yml` 默认配置了 `pull_policy: missing`，**优先从 GitHub 拉取预构建镜像，获取不到或本地不存在时将自动触发本地源码构建**，无需手动编译。
+
+同时，数据目录 `./data` 会自动挂载到宿主机，确保持久化存储数据库、加密密钥与生图资产。
 
 #### 1. 一键启动
 ```bash
@@ -105,9 +107,12 @@ Any2API (Monorepo)
 git clone https://github.com/2guan/any2api.git
 cd any2api
 
-# 启动容器 (首次启动会自动完成编译与无头环境准备)
+# 启动容器 (自动优先拉取 GitHub 镜像，失败则自动本地构建)
 docker compose up -d
 ```
+
+> [!NOTE]
+> 如果您希望强制在本地重新编译源码，可运行：`docker compose up -d --build`
 
 #### 2. 访问与使用
 - 浏览器打开控制台：**`http://localhost:3300/`**
@@ -135,10 +140,7 @@ docker compose up -d
 ### 方式二：💻 纯 Docker 单容器运行
 
 ```bash
-# 构建镜像
-docker build -t any2api:latest .
-
-# 启动并挂载数据目录
+# 直接从 GitHub Container Registry 拉取并运行
 docker run -d \
   --name any2api \
   --restart unless-stopped \
@@ -146,7 +148,7 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -e ANY2API_OWNER_USERNAME=admin \
   -e ANY2API_OWNER_PASSWORD=admin123 \
-  any2api:latest
+  ghcr.io/2guan/any2api:latest
 ```
 
 ---

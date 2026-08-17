@@ -1,13 +1,14 @@
 services:
   any2api:
+    image: ghcr.io/2guan/any2api:latest
     build:
       context: .
       dockerfile: Dockerfile
-    image: any2api:latest
+    pull_policy: missing   # 优先拉取预构建镜像，获取不到或本地不存在时自动触发本地源码构建
     container_name: any2api
     restart: unless-stopped
     ports:
-      - "3300:8788"      # 外部访问端口 3300 映射至容器内 8788
+      - "3300:8788"        # 外部访问端口 3300 映射至容器内 8788
     environment:
       - NODE_ENV=production
       - ANY2API_HOST=0.0.0.0
@@ -17,7 +18,7 @@ services:
       - ANY2API_OWNER_PASSWORD=admin123
       - LOG_LEVEL=info
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data   # 持久化数据目录
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8788/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))\""]
       interval: 30s
