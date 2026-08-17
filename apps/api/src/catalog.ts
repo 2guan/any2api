@@ -61,7 +61,8 @@ export const webDefaults: readonly WebDefault[] = [
   { provider: 'jimeng', upstreamId: '文生图 3.0', publicModel: 'jimeng-3.0', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
   { provider: 'jimeng', upstreamId: '图片 5.0 Pro', publicModel: 'jimeng-image-5.0-pro', capabilities: { input: ['text', 'image'], output: ['image'], streaming: false, imageGeneration: true } },
   { provider: 'jimeng', upstreamId: '图片 5.0 Lite', publicModel: 'jimeng-image-5.0-lite', capabilities: { input: ['text', 'image'], output: ['image'], streaming: false, imageGeneration: true } },
-  { provider: 'jimeng', upstreamId: 'Seedance 2.0', publicModel: 'jimeng-seedance-2.0', capabilities: { input: ['text', 'image'], output: ['video'], streaming: false } }
+  { provider: 'jimeng', upstreamId: 'Seedance 2.0', publicModel: 'jimeng-seedance-2.0', capabilities: { input: ['text', 'image'], output: ['video'], streaming: false } },
+  { provider: 'jimeng', upstreamId: 'Seedance 2.0 Fast', publicModel: 'jimeng-seedance-2.0-fast', capabilities: { input: ['text', 'image'], output: ['video'], streaming: false } }
 ];
 
 export function visibleModels() {
@@ -83,7 +84,8 @@ export function catalog() {
 }
 
 export function seedWebDefaults() {
-  const insertModel = db.prepare(`INSERT OR IGNORE INTO models (id, provider, upstream_id, capabilities_json, discovered_at) VALUES (?, ?, ?, ?, ?)`);
+  const insertModel = db.prepare(`INSERT INTO models (id, provider, upstream_id, capabilities_json, discovered_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(provider, upstream_id) DO UPDATE SET capabilities_json = excluded.capabilities_json`);
   const insertRoute = db.prepare(`INSERT OR IGNORE INTO routes (id, public_model, model_id, created_at) VALUES (?, ?, ?, ?)`);
   const now = Date.now();
   db.exec('BEGIN IMMEDIATE');

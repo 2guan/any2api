@@ -359,7 +359,23 @@ function KeysPage() {
 }
 
 
-function ModelTags({ raw }: { raw: string }) { const value = JSON.parse(raw) as { input: string[]; output: string[]; reasoningSummary?: boolean; webSearch?: boolean; imageGeneration?: boolean }; const labels = [value.input.includes('text') || value.output.includes('text') ? '文本' : '', value.reasoningSummary ? '思考' : '', value.webSearch ? '搜索' : '', value.input.includes('image') ? '视觉' : '', value.imageGeneration || value.output.includes('image') ? '生图' : '', value.output.includes('video') ? '生视频' : ''].filter(Boolean); return <span className="model-tags">{labels.map((label) => <small key={label}>{label}</small>)}</span>; }
+function ModelTags({ raw }: { raw: string }) {
+  const value = JSON.parse(raw) as { input: string[]; output: string[]; reasoningSummary?: boolean; webSearch?: boolean; imageGeneration?: boolean };
+  const isImageGen = value.imageGeneration || value.output.includes('image');
+  const isVideoGen = value.output.includes('video');
+  const isTextOut = value.output.includes('text');
+
+  const labels = [
+    isTextOut ? '文本' : '',
+    value.reasoningSummary ? '思考' : '',
+    value.webSearch ? '搜索' : '',
+    value.input.includes('image') ? '视觉' : '',
+    isImageGen ? '生图' : '',
+    isVideoGen ? '生视频' : ''
+  ].filter(Boolean);
+
+  return <span className="model-tags">{labels.map((label) => <small key={label}>{label}</small>)}</span>;
+}
 
 function RoutesPage() {
   type RouteItem = { id: string; public_model: string; provider: string; upstream_id: string; capabilities_json: string; enabled: number; priority: number };
