@@ -161,26 +161,30 @@ export class ChatGPTAdapter implements ProviderAdapter {
   }
 
   async uploadFile(base64OrUrl: string, filename = 'image.png', accessToken = ''): Promise<{ fileId: string; mimeType: string; size: number }> {
-    if (!accessToken) throw new Error('Authenticated account required for image upload');
+    if (!accessToken) throw new Error('使用多模态视觉模型需要配置已登录的账号凭据');
 
     let buffer: Buffer;
     let mimeType = 'image/png';
 
     if (base64OrUrl.startsWith('data:')) {
-      const match = base64OrUrl.match(/^data:([^;]+);base64,(.+)$/);
-      if (match) {
-        mimeType = match[1];
-        buffer = Buffer.from(match[2], 'base64');
+      const commaIdx = base64OrUrl.indexOf(',');
+      if (commaIdx !== -1) {
+        const header = base64OrUrl.slice(0, commaIdx);
+        const match = header.match(/^data:([^;]+);base64/i);
+        if (match) mimeType = match[1];
+        const rawBase64 = base64OrUrl.slice(commaIdx + 1).replace(/\s+/g, '');
+        buffer = Buffer.from(rawBase64, 'base64');
       } else {
-        buffer = Buffer.from(base64OrUrl.split(',')[1] ?? '', 'base64');
+        buffer = Buffer.from(base64OrUrl.replace(/\s+/g, ''), 'base64');
       }
     } else if (base64OrUrl.startsWith('http://') || base64OrUrl.startsWith('https://')) {
       const res = await fetch(base64OrUrl);
+      if (!res.ok) throw new Error(`获取图片URL失败 (HTTP ${res.status}): ${base64OrUrl.slice(0, 100)}`);
       const arrayBuffer = await res.arrayBuffer();
       buffer = Buffer.from(arrayBuffer);
       mimeType = res.headers.get('content-type') || mimeType;
     } else {
-      buffer = Buffer.from(base64OrUrl, 'base64');
+      buffer = Buffer.from(base64OrUrl.replace(/\s+/g, ''), 'base64');
     }
 
     const accountId = extractChatGPTAccountId(accessToken);
@@ -199,7 +203,10 @@ export class ChatGPTAdapter implements ProviderAdapter {
       }),
     });
 
-    if (!reqRes.ok) throw new Error(`File upload init failed: HTTP ${reqRes.status}`);
+    if (!reqRes.ok) {
+      const errTxt = await reqRes.text().catch(() => '');
+      throw new Error(`OpenAI 存储池上传初始化失败 (HTTP ${reqRes.status}): ${errTxt.slice(0, 150)}`);
+    }
     const reqData = await reqRes.json() as { file_id: string; upload_url: string };
     const fileId = reqData.file_id;
     const uploadUrl = reqData.upload_url;
@@ -210,9 +217,11 @@ export class ChatGPTAdapter implements ProviderAdapter {
       body: new Uint8Array(buffer),
     });
 
-    if (!putRes.ok && putRes.status !== 201) throw new Error(`File upload binary failed: HTTP ${putRes.status}`);
+    if (!putRes.ok && putRes.status !== 201) {
+      throw new Error(`OpenAI 存储池二进制写入失败 (HTTP ${putRes.status})`);
+    }
 
-    await fetch(`${BASE_URL}/backend-api/files/${fileId}/process`, {
+    const procRes = await fetch(`${BASE_URL}/backend-api/files/${fileId}/process`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -221,6 +230,11 @@ export class ChatGPTAdapter implements ProviderAdapter {
       },
       body: JSON.stringify({}),
     });
+
+    if (!procRes.ok) {
+      const procTxt = await procRes.text().catch(() => '');
+      console.warn(`File process non-200 (HTTP ${procRes.status}):`, procTxt);
+    }
 
     return { fileId, mimeType, size: buffer.length };
   }

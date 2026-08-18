@@ -27,7 +27,10 @@ import { estimateTokens } from './tokens.js';
 
 seedWebDefaults();
 
-const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
+const app = Fastify({
+  logger: { level: process.env.LOG_LEVEL ?? 'info' },
+  bodyLimit: 104857600 // 100MB for multimodal vision / image payloads
+});
 await app.register(cookie);
 await app.register(cors, {
   origin: true,
