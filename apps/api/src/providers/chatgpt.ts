@@ -105,6 +105,82 @@ function isSearchOrToolQuery(text: string, recipient?: string, contentType?: str
   return false;
 }
 
+export function extractMessageContent(rawContent: unknown): { text: string; images: string[] } {
+  let content = rawContent;
+  if (typeof content === 'string') {
+    const trimmed = content.trim();
+    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+      try {
+        content = JSON.parse(trimmed);
+      } catch {
+        /* Keep original string */
+      }
+    }
+  }
+
+  const textParts: string[] = [];
+  const imageParts: string[] = [];
+
+  const processItem = (item: unknown) => {
+    if (!item) return;
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (trimmed.startsWith('data:image/') || /^https?:\/\/.+\.(png|jpg|jpeg|gif|webp|bmp|svg)/i.test(trimmed)) {
+        imageParts.push(trimmed);
+        return;
+      }
+      const mdImgRegex = /!\[.*?\]\((data:image\/[a-zA-Z0-9+.-]+;base64,[^\s)]+|https?:\/\/[^\s)]+)\)/g;
+      let match: RegExpExecArray | null;
+      let lastIdx = 0;
+      while ((match = mdImgRegex.exec(item)) !== null) {
+        textParts.push(item.slice(lastIdx, match.index));
+        imageParts.push(match[1]);
+        lastIdx = mdImgRegex.lastIndex;
+      }
+      textParts.push(item.slice(lastIdx));
+      return;
+    }
+
+    if (typeof item === 'object') {
+      const obj = item as Record<string, unknown>;
+      const type = String(obj.type || '').toLowerCase().replace(/[_-]/g, '');
+
+      if (type === 'text' || typeof obj.text === 'string') {
+        if (typeof obj.text === 'string') textParts.push(obj.text);
+      }
+
+      let imgUrl = '';
+      if (typeof obj.image_url === 'string') imgUrl = obj.image_url;
+      else if (typeof (obj.image_url as { url?: string })?.url === 'string') imgUrl = (obj.image_url as { url: string }).url;
+      else if (typeof obj.imageurl === 'string') imgUrl = obj.imageurl;
+      else if (typeof (obj.imageurl as { url?: string })?.url === 'string') imgUrl = (obj.imageurl as { url: string }).url;
+      else if (typeof obj.url === 'string') imgUrl = obj.url;
+      else if (typeof obj.image === 'string') imgUrl = obj.image;
+      else if (obj.source && typeof obj.source === 'object') {
+        const src = obj.source as { data?: string; media_type?: string };
+        if (src.data) imgUrl = `data:${src.media_type || 'image/png'};base64,${src.data}`;
+      }
+
+      if (imgUrl) {
+        imageParts.push(imgUrl);
+      } else if (!type && typeof obj.content === 'string') {
+        processItem(obj.content);
+      }
+    }
+  };
+
+  if (Array.isArray(content)) {
+    for (const item of content) processItem(item);
+  } else {
+    processItem(content);
+  }
+
+  return {
+    text: textParts.join('').trim(),
+    images: imageParts
+  };
+}
+
 function formatMultiTurnMessages(messages: ProviderRequest['messages']) {
   if (!Array.isArray(messages)) return [];
   return messages;
@@ -284,55 +360,16 @@ export class ChatGPTAdapter implements ProviderAdapter {
 
     for (const msg of formattedMessages) {
       const role = msg.role === 'assistant' ? 'assistant' : (msg.role === 'system' ? 'system' : 'user');
-      const content = msg.content;
+      const { text, images } = extractMessageContent(msg.content);
       const msgNodeId = crypto.randomUUID();
 
-      const textParts: string[] = [];
-      const imageParts: string[] = [];
-
-      if (typeof content === 'string') {
-        const mdImgRegex = /!\[.*?\]\((data:image\/[a-zA-Z0-9+.-]+;base64,[^\s)]+|https?:\/\/[^\s)]+)\)/g;
-        let match: RegExpExecArray | null;
-        let lastIdx = 0;
-        while ((match = mdImgRegex.exec(content)) !== null) {
-          textParts.push(content.slice(lastIdx, match.index));
-          imageParts.push(match[1]);
-          lastIdx = mdImgRegex.lastIndex;
-        }
-        textParts.push(content.slice(lastIdx));
-      } else if (Array.isArray(content)) {
-        for (const item of content as Array<Record<string, unknown> | string>) {
-          if (typeof item === 'string') {
-            textParts.push(item);
-          } else if (item && typeof item === 'object') {
-            if (item.type === 'text' && typeof item.text === 'string') {
-              textParts.push(item.text);
-            } else if (item.type === 'image_url') {
-              const url = typeof item.image_url === 'string' ? item.image_url : (item.image_url as { url?: string })?.url;
-              if (url) imageParts.push(url);
-            } else if (item.type === 'image') {
-              if (item.source && typeof item.source === 'object') {
-                const src = item.source as { data?: string; media_type?: string };
-                if (src.data) imageParts.push(`data:${src.media_type || 'image/png'};base64,${src.data}`);
-              } else if (typeof item.url === 'string') {
-                imageParts.push(item.url);
-              }
-            } else if (item.type === 'input_image') {
-              const url = typeof item.image_url === 'string' ? item.image_url : (item.image_url as { url?: string })?.url;
-              if (url) imageParts.push(url);
-            }
-          }
-        }
-      }
-
-      const combinedText = textParts.join('').trim();
       const parts: unknown[] = [];
       const attachments: unknown[] = [];
 
-      if (imageParts.length > 0 && accessToken) {
-        for (let i = 0; i < imageParts.length; i++) {
+      if (images.length > 0 && accessToken) {
+        for (let i = 0; i < images.length; i++) {
           try {
-            const uploaded = await this.uploadFile(imageParts[i], `image_${i + 1}.png`, accessToken);
+            const uploaded = await this.uploadFile(images[i], `image_${i + 1}.png`, accessToken);
             parts.push({
               content_type: 'image_asset_pointer',
               asset_pointer: `file-service://${uploaded.fileId}`,
@@ -354,17 +391,17 @@ export class ChatGPTAdapter implements ProviderAdapter {
         }
       }
 
-      if (combinedText) {
-        parts.push(combinedText);
+      if (text) {
+        parts.push(text);
       } else if (parts.length === 0) {
-        parts.push(typeof content === 'string' ? content : '');
+        parts.push(typeof msg.content === 'string' ? msg.content : '');
       }
 
       conversationMessages.push({
         id: msgNodeId,
         author: { role },
         content: {
-          content_type: parts.length > 1 || imageParts.length > 0 ? 'multimodal_text' : 'text',
+          content_type: parts.length > 1 || images.length > 0 ? 'multimodal_text' : 'text',
           parts
         },
         metadata: attachments.length > 0 ? { attachments } : undefined

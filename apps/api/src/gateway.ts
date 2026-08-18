@@ -11,6 +11,42 @@ function route(model: string) {
     WHERE r.public_model = ? AND r.enabled = 1 AND m.enabled = 1`).get(model) as { provider: string; upstream_id: string } | undefined;
 }
 
+function sanitizeMessagesForLog(messages: unknown): unknown {
+  if (!Array.isArray(messages)) return messages;
+  return messages.map((msg) => {
+    if (!msg || typeof msg !== 'object') return msg;
+    const role = (msg as { role?: string }).role;
+    const content = (msg as { content?: unknown }).content;
+    if (typeof content === 'string') {
+      if (content.length > 300 && (content.includes('base64,') || content.includes('imageurl') || content.includes('image_url'))) {
+        return { role, content: content.replace(/data:image\/[a-zA-Z0-9+.-]+;base64,[a-zA-Z0-9+/=]+/g, '[base64 image]') };
+      }
+      return { role, content };
+    }
+    if (Array.isArray(content)) {
+      const sanitized = content.map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        const obj = { ...item } as Record<string, any>;
+        if (obj.image_url && typeof obj.image_url === 'object' && obj.image_url.url?.startsWith('data:')) {
+          obj.image_url = { ...obj.image_url, url: `[base64 image (${obj.image_url.url.length} chars)]` };
+        }
+        if (obj.imageurl && typeof obj.imageurl === 'object' && obj.imageurl.url?.startsWith('data:')) {
+          obj.imageurl = { ...obj.imageurl, url: `[base64 image (${obj.imageurl.url.length} chars)]` };
+        }
+        if (typeof obj.image_url === 'string' && obj.image_url.startsWith('data:')) {
+          obj.image_url = `[base64 image (${obj.image_url.length} chars)]`;
+        }
+        if (typeof obj.imageurl === 'string' && obj.imageurl.startsWith('data:')) {
+          obj.imageurl = `[base64 image (${obj.imageurl.length} chars)]`;
+        }
+        return obj;
+      });
+      return { role, content: sanitized };
+    }
+    return msg;
+  });
+}
+
 export async function* execute(request: GatewayRequest, options: { kind: 'api' | 'connection_test'; accountId?: string; apiKeyId?: string }) {
   const target = route(request.model);
   if (!target) throw Object.assign(new Error(`Model '${request.model}' is unavailable`), { statusCode: 404 });
@@ -25,7 +61,7 @@ export async function* execute(request: GatewayRequest, options: { kind: 'api' |
   const requestId = beginRequest({ kind: options.kind, apiKeyId: options.apiKeyId, accountId: account.id, provider: target.provider, model: request.model });
   const started = Date.now();
   event(requestId, 'info', 'request.routed', 'Request routed to an eligible account', { provider: target.provider, accountId: account.id, model: target.upstream_id });
-  event(requestId, 'info', 'request.sent', 'Sent message to upstream', { model: target.upstream_id, messages: request.messages });
+  event(requestId, 'info', 'request.sent', 'Sent message to upstream', { model: target.upstream_id, messages: sanitizeMessagesForLog(request.messages) });
   let messageContent = '';
   let reasoningContent = '';
   let summaryWritten = false;
