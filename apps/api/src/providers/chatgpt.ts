@@ -348,8 +348,8 @@ export class ChatGPTAdapter implements ProviderAdapter {
         id: msgNodeId,
         author: { role },
         content: {
-          content_type: parts.length > 1 || images.length > 0 ? 'multimodal_text' : 'text',
-          parts
+          content_type: 'text',
+          parts: [text || (images.length > 0 ? '分析这张图片' : '')]
         },
         metadata: attachments.length > 0 ? { attachments } : undefined
       });
