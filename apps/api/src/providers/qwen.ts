@@ -3,11 +3,7 @@ import type { Account } from '../accounts.js';
 import type { ProviderAdapter, ProviderEvent, ProviderRequest } from './types.js';
 import { browserSupervisor } from '../browser.js';
 import { saveRemoteMedia } from '../media.js';
-
-function requestText(messages: ProviderRequest['messages']) {
-  const lastMsg = [...messages].reverse().find((m) => m.role === 'user') ?? messages.at(-1);
-  return typeof lastMsg?.content === 'string' ? lastMsg.content : JSON.stringify(lastMsg?.content ?? '');
-}
+import { extractConversationContent } from '../multimodal.js';
 
 function extractQwenToken(raw: string): { bearer: string; cookie: string } {
   const clean = raw.trim();
@@ -66,14 +62,16 @@ export class QwenAdapter implements ProviderAdapter {
       throw new Error('未配置通义千问 Qwen 凭据，请在【账号池】添加账号凭据');
     }
 
-    const prompt = requestText(request.messages);
+    const { systemPrompt, latestText, images } = extractConversationContent(request.messages);
+    let prompt = latestText || '请帮我分析这张图片';
+    if (systemPrompt) prompt = `[系统设定]: ${systemPrompt}\n\n${prompt}`;
     const model = request.model || 'qwen3.8-max';
 
     // 使用自动化无头浏览器仿真驱动
-    yield* this.streamInBrowser(prompt, rawToken, model, account);
+    yield* this.streamInBrowser(prompt, images, rawToken, model, account);
   }
 
-  private async *streamInBrowser(prompt: string, rawToken: string, _model: string, account: Account): AsyncIterable<ProviderEvent> {
+  private async *streamInBrowser(prompt: string, images: string[], rawToken: string, _model: string, account: Account): AsyncIterable<ProviderEvent> {
     const browser = await browserSupervisor.getBrowser();
     const { bearer, cookie } = extractQwenToken(rawToken);
 
@@ -169,6 +167,43 @@ export class QwenAdapter implements ProviderAdapter {
       await page.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
       await page.waitForTimeout(2000);
 
+      // 如果有多模态图片，通过文件输入控件上传图片
+      if (images.length > 0) {
+        for (let i = 0; i < images.length; i++) {
+          const rawImg = images[i];
+          let buffer: Buffer;
+          let mime = 'image/png';
+          if (rawImg.startsWith('data:')) {
+            const commaIdx = rawImg.indexOf(',');
+            if (commaIdx !== -1) {
+              const header = rawImg.slice(0, commaIdx);
+              const match = header.match(/^data:([^;]+);base64/i);
+              if (match) mime = match[1];
+              buffer = Buffer.from(rawImg.slice(commaIdx + 1).replace(/\s+/g, ''), 'base64');
+            } else {
+              buffer = Buffer.from(rawImg.replace(/\s+/g, ''), 'base64');
+            }
+          } else if (rawImg.startsWith('http://') || rawImg.startsWith('https://')) {
+            const res = await fetch(rawImg);
+            const arr = await res.arrayBuffer();
+            buffer = Buffer.from(arr);
+            mime = res.headers.get('content-type') || mime;
+          } else {
+            buffer = Buffer.from(rawImg.replace(/\s+/g, ''), 'base64');
+          }
+
+          const fileInput = page.locator('input[type="file"]').first();
+          if (await fileInput.count() > 0) {
+            await fileInput.setInputFiles({
+              name: `image_${i + 1}.png`,
+              mimeType: mime,
+              buffer
+            }).catch(() => {});
+            await page.waitForTimeout(1500);
+          }
+        }
+      }
+
       // 定位输入框并输入
       const inputEl = page.locator('textarea, [contenteditable="true"]').first();
       if (await inputEl.count() === 0) {
@@ -187,9 +222,15 @@ export class QwenAdapter implements ProviderAdapter {
       });
 
       await inputEl.click();
-      await page.keyboard.type(prompt, { delay: 10 });
+      await inputEl.fill(prompt);
       await page.waitForTimeout(400);
-      await page.keyboard.press('Enter');
+
+      const sendBtn = page.locator('button[aria-label*="发送"], button[type="submit"], .send-button, .chat-input-send-button').first();
+      if (await sendBtn.count() > 0 && await sendBtn.isEnabled()) {
+        await sendBtn.click();
+      } else {
+        await page.keyboard.press('Enter');
+      }
 
       let pendingBuffer = '';
       let lastReasoningText = '';
