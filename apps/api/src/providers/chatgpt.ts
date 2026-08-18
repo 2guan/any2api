@@ -297,7 +297,7 @@ export class ChatGPTAdapter implements ProviderAdapter {
       throw new Error(`OpenAI 存储池二进制写入失败 (HTTP ${putRes.status})`);
     }
 
-    const procRes = await fetch(`${BASE_URL}/backend-api/files/${fileId}/process`, {
+    const procRes = await fetch(`${BASE_URL}/backend-api/files/${fileId}/uploaded`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -309,7 +309,7 @@ export class ChatGPTAdapter implements ProviderAdapter {
 
     if (!procRes.ok) {
       const procTxt = await procRes.text().catch(() => '');
-      console.warn(`File process non-200 (HTTP ${procRes.status}):`, procTxt);
+      throw new Error(`OpenAI 存储池文件状态确认失败 (HTTP ${procRes.status}): ${procTxt.slice(0, 150)}`);
     }
 
     return { fileId, mimeType, size: buffer.length };
@@ -358,18 +358,39 @@ export class ChatGPTAdapter implements ProviderAdapter {
     const formattedMessages = formatMultiTurnMessages(request.messages);
     const conversationMessages = [];
 
+    let systemInstruction = '';
+    const nonSystemMessages: typeof formattedMessages = [];
     for (const msg of formattedMessages) {
-      const role = msg.role === 'assistant' ? 'assistant' : (msg.role === 'system' ? 'system' : 'user');
-      const { text, images } = extractMessageContent(msg.content);
+      if (msg.role === 'system') {
+        const { text } = extractMessageContent(msg.content);
+        if (text) systemInstruction = systemInstruction ? `${systemInstruction}\n${text}` : text;
+      } else {
+        nonSystemMessages.push(msg);
+      }
+    }
+
+    if (nonSystemMessages.length === 0 && systemInstruction) {
+      nonSystemMessages.push({ role: 'user', content: systemInstruction });
+      systemInstruction = '';
+    }
+
+    for (let i = 0; i < nonSystemMessages.length; i++) {
+      const msg = nonSystemMessages[i];
+      const role = msg.role === 'assistant' ? 'assistant' : 'user';
+      let { text, images } = extractMessageContent(msg.content);
       const msgNodeId = crypto.randomUUID();
+
+      if (i === 0 && systemInstruction && role === 'user') {
+        text = `[系统指示]: ${systemInstruction}\n\n${text}`.trim();
+      }
 
       const parts: unknown[] = [];
       const attachments: unknown[] = [];
 
       if (images.length > 0 && accessToken) {
-        for (let i = 0; i < images.length; i++) {
+        for (let j = 0; j < images.length; j++) {
           try {
-            const uploaded = await this.uploadFile(images[i], `image_${i + 1}.png`, accessToken);
+            const uploaded = await this.uploadFile(images[j], `image_${j + 1}.png`, accessToken);
             parts.push({
               content_type: 'image_asset_pointer',
               asset_pointer: `file-service://${uploaded.fileId}`,
@@ -379,7 +400,7 @@ export class ChatGPTAdapter implements ProviderAdapter {
             });
             attachments.push({
               id: uploaded.fileId,
-              name: `image_${i + 1}.png`,
+              name: `image_${j + 1}.png`,
               size: uploaded.size,
               mime_type: uploaded.mimeType,
               width: null,
@@ -387,6 +408,7 @@ export class ChatGPTAdapter implements ProviderAdapter {
             });
           } catch (err) {
             console.error('ChatGPT file upload error:', err);
+            throw err;
           }
         }
       }
