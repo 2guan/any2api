@@ -69,41 +69,39 @@ export class JimengAdapter implements ProviderAdapter {
     const prompt = latestUserText(request.messages);
     if (!prompt) throw new Error('即梦 AI 需要绘图提示词');
 
-    try {
-      const images = await this.generateImageDirect(prompt, rawToken, request.model || 'jimeng-3.1');
-      if (images && images.length > 0) {
-        for (const url of images) {
-          const localUrl = await saveRemoteMedia(url, 'jimeng_img');
-          yield { type: 'image.created', url: localUrl };
-        }
-        yield { type: 'completed' };
-        return;
+    const images = await this.generateImageDirect(prompt, rawToken, request.model || 'jimeng-3.1');
+    if (images && images.length > 0) {
+      for (const url of images) {
+        const localUrl = await saveRemoteMedia(url, 'jimeng_img');
+        yield { type: 'image.created', url: localUrl };
       }
-    } catch {
-      /* Fallback to browser execution */
+      yield { type: 'completed' };
+      return;
     }
 
-    for await (const evt of this.browserFallback.streamTurn(request, account)) {
-      if (evt.type === 'image.created') {
-        const localUrl = await saveRemoteMedia(evt.url, 'jimeng_img');
-        yield { type: 'image.created', url: localUrl };
-      } else {
-        yield evt;
-      }
-    }
+    throw new Error('即梦 AI 生成任务超时或未返回可用图片结果');
   }
 
   private async generateImageDirect(prompt: string, tokenInput: string, model: string): Promise<string[]> {
     const resolutions = ['2k', '1k'];
+    let lastErr: Error | null = null;
     for (const resQuality of resolutions) {
       try {
         const urls = await this.sendZhizinanDirectRequest(prompt, tokenInput, model, resQuality);
         if (urls && urls.length > 0) return urls;
       } catch (err) {
+        lastErr = err as Error;
         const msg = err instanceof Error ? err.message : '';
-        if (!msg.includes('1006') && !msg.includes('1000')) break;
+        // If it's points/auth error, throw immediately with friendly hint
+        if (msg.includes('1006') || msg.includes('积分不足')) {
+          throw new Error('即梦 AI 积分不足或无可用生成权益 (错误码: 1006)。请在即梦网页端（jimeng.jianying.com）签到领取免费积分或开通会员权益后重试');
+        }
+        if (msg.includes('1000') || msg.includes('未登录')) {
+          throw new Error('即梦 AI 登录凭据（sessionid）已失效或已过期，请在网页端按 F12 重新复制最新的 sessionid Cookie 并更新账号池');
+        }
       }
     }
+    if (lastErr) throw lastErr;
     return [];
   }
 
