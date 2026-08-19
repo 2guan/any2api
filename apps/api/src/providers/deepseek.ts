@@ -2,11 +2,7 @@ import { credentialsFor } from '../credentials.js';
 import type { Account } from '../accounts.js';
 import type { ProviderAdapter, ProviderEvent, ProviderRequest } from './types.js';
 import { browserSupervisor } from '../browser.js';
-
-function requestText(messages: ProviderRequest['messages']) {
-  const lastMsg = [...messages].reverse().find((m) => m.role === 'user') ?? messages.at(-1);
-  return typeof lastMsg?.content === 'string' ? lastMsg.content : JSON.stringify(lastMsg?.content ?? '');
-}
+import { extractConversationContent } from '../multimodal.js';
 
 export class DeepSeekAdapter implements ProviderAdapter {
   readonly provider = 'deepseek';
@@ -68,9 +64,14 @@ export class DeepSeekAdapter implements ProviderAdapter {
     }
 
     const modelName = (request.model || 'deepseek-v3').toLowerCase();
-    const isReasoner = modelName.includes('r1') || modelName.includes('reasoner') || request.reasoning?.effort !== 'off';
+    const isReasoner = modelName.includes('r1') || modelName.includes('reasoner') || modelName.includes('think') || request.reasoning?.effort !== 'off';
     const isSearch = request.webSearch ?? true;
-    const prompt = requestText(request.messages);
+
+    const { systemPrompt, latestText } = extractConversationContent(request.messages);
+    let prompt = latestText || '你好';
+    if (systemPrompt) {
+      prompt = `[系统指示]: ${systemPrompt}\n\n${prompt}`;
+    }
 
     // 运行仿真浏览器交互通道
     yield* this.streamInBrowser(prompt, cleanToken, isReasoner, isSearch, account);
@@ -95,14 +96,55 @@ export class DeepSeekAdapter implements ProviderAdapter {
     const browser = await browserSupervisor.getBrowser();
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
     });
 
-    // 挂载 XHR 进度拦截器
+    // 在页面加载前直接注入登录凭据
+    await context.addInitScript(({ tok, uid }) => {
+      localStorage.setItem('userToken', JSON.stringify({ value: tok, __version: '0' }));
+      if (uid) {
+        localStorage.setItem('__appKit_userInfo', JSON.stringify({ value: { id: uid }, __version: '0' }));
+      }
+      localStorage.setItem('user_session', JSON.stringify({ token: tok }));
+    }, { tok: token, uid: userId });
+
+    // 挂载全通道流式打字机拦截器 (fetch + XHR)
     await context.addInitScript(() => {
+      const origFetch = window.fetch;
+      window.fetch = async function (url, options) {
+        const res = await origFetch.apply(this, [url as string, options]);
+        const urlStr = typeof url === 'string' ? url : ((url as { url?: string })?.url || '');
+        if (urlStr.includes('/api/v0/chat/completion') || urlStr.includes('/chat/completion')) {
+          try {
+            const cloned = res.clone();
+            if (cloned.body) {
+              const reader = cloned.body.getReader();
+              const decoder = new TextDecoder();
+              void (async () => {
+                try {
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const text = decoder.decode(value, { stream: true });
+                    if (text && (window as unknown as { __ds_push_chunk?: (s: string) => void }).__ds_push_chunk) {
+                      (window as unknown as { __ds_push_chunk: (s: string) => void }).__ds_push_chunk(text);
+                    }
+                  }
+                } catch {
+                } finally {
+                  if ((window as unknown as { __ds_end_stream?: () => void }).__ds_end_stream) {
+                    (window as unknown as { __ds_end_stream: () => void }).__ds_end_stream();
+                  }
+                }
+              })();
+            }
+          } catch {}
+        }
+        return res;
+      };
+
       const origOpen = XMLHttpRequest.prototype.open;
       const origSend = XMLHttpRequest.prototype.send;
-
       XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, ...args: unknown[]) {
         (this as unknown as { _url: unknown })._url = args[1];
         return (origOpen as (...a: unknown[]) => void).apply(this, args);
@@ -154,36 +196,23 @@ export class DeepSeekAdapter implements ProviderAdapter {
         }
       });
 
-      // 访问 sign_in 页面注入 LocalStorage 凭据
-      await page.goto('https://chat.deepseek.com/sign_in', { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.evaluate(({ tok, uid }) => {
-        localStorage.setItem('userToken', JSON.stringify({ value: tok, __version: '0' }));
-        if (uid) {
-          localStorage.setItem('__appKit_userInfo', JSON.stringify({ value: { id: uid }, __version: '0' }));
-        }
-        localStorage.setItem('user_session', JSON.stringify({ token: tok }));
-      }, { tok: token, uid: userId });
+      // 直接进入主界面
+      await page.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded', timeout: 25000 });
 
-      // 进入主界面
-      await page.goto('https://chat.deepseek.com/', { waitUntil: 'networkidle', timeout: 25000 }).catch(() => {});
-      await page.waitForTimeout(1000);
-
-      // 查找输入框
-      const inputEl = await page.$('textarea');
-      if (!inputEl) {
-        throw new Error('未能在 DeepSeek 页面中找到对话输入框，请检查 User Token 是否有效');
-      }
+      // 定位输入框（等待 React 挂载）
+      const inputEl = page.locator('textarea, [contenteditable="true"]').first();
+      await inputEl.waitFor({ state: 'visible', timeout: 20000 });
 
       // 辅助函数：检查按钮是否已激活
       const isButtonActive = async (selector: string) => {
-        const btn = await page.$(selector);
-        if (!btn) return false;
+        const btn = page.locator(selector).first();
+        if (await btn.count() === 0) return false;
         return btn.evaluate((el) => {
           if (el.getAttribute('aria-pressed') === 'true') return true;
           let node: HTMLElement | null = el as HTMLElement;
           while (node) {
             const cls = node.className || '';
-            if (typeof cls === 'string' && (cls.includes('active') || cls.includes('selected') || cls.includes('--on'))) return true;
+            if (typeof cls === 'string' && (cls.includes('active') || cls.includes('selected') || cls.includes('--on') || cls.includes('ds-button--primary'))) return true;
             node = node.parentElement;
             if (!node || node === document.body) break;
           }
@@ -193,9 +222,10 @@ export class DeepSeekAdapter implements ProviderAdapter {
 
       // 处理 深度思考 开关
       if (isReasoner) {
-        const deepThinkBtn = await page.$('xpath=//*[contains(text(), "DeepThink") or contains(text(), "深度思考")]');
-        if (deepThinkBtn) {
-          const active = await isButtonActive('xpath=//*[contains(text(), "DeepThink") or contains(text(), "深度思考")]');
+        const deepThinkSelector = 'xpath=//*[contains(text(), "DeepThink") or contains(text(), "深度思考")]';
+        const deepThinkBtn = page.locator(deepThinkSelector).first();
+        if (await deepThinkBtn.count() > 0) {
+          const active = await isButtonActive(deepThinkSelector);
           if (!active) {
             await deepThinkBtn.click().catch(() => {});
             await page.waitForTimeout(200);
@@ -205,9 +235,10 @@ export class DeepSeekAdapter implements ProviderAdapter {
 
       // 处理 联网搜索 开关
       if (isSearch) {
-        const searchBtn = await page.$('xpath=//*[contains(text(), "Search") or contains(text(), "联网搜索")]');
-        if (searchBtn) {
-          const active = await isButtonActive('xpath=//*[contains(text(), "Search") or contains(text(), "联网搜索")]');
+        const searchSelector = 'xpath=//*[contains(text(), "Search") or contains(text(), "联网搜索")]';
+        const searchBtn = page.locator(searchSelector).first();
+        if (await searchBtn.count() > 0) {
+          const active = await isButtonActive(searchSelector);
           if (!active) {
             await searchBtn.click().catch(() => {});
             await page.waitForTimeout(200);
@@ -216,12 +247,19 @@ export class DeepSeekAdapter implements ProviderAdapter {
       }
 
       // 填入 Prompt 并提交
+      await inputEl.click();
       await inputEl.fill(prompt);
-      await page.waitForTimeout(200);
-      await page.keyboard.press('Enter');
+      await page.waitForTimeout(300);
+
+      const sendBtn = page.locator('div.ds-button--primary, div[role="button"].ds-button--circle, button[type="submit"], button[aria-label*="发送"], button[aria-label*="Send"]').first();
+      if (await sendBtn.count() > 0 && !(await sendBtn.getAttribute('class'))?.includes('disabled')) {
+        await sendBtn.click();
+      } else {
+        await inputEl.press('Enter');
+      }
 
       let buffer = '';
-      let isResponseStarted = false;
+      let isResponseStarted = !isReasoner;
       let hasReceivedAnyDelta = false;
       const timeoutMs = 90000;
       const startTime = Date.now();
@@ -231,7 +269,7 @@ export class DeepSeekAdapter implements ProviderAdapter {
           if (Date.now() - startTime > timeoutMs) break;
           await Promise.race([
             new Promise<void>((r) => { resolveNext = () => r(); }),
-            new Promise<void>((r) => setTimeout(r, 500)),
+            new Promise<void>((r) => setTimeout(r, 400)),
           ]);
           continue;
         }
@@ -251,7 +289,13 @@ export class DeepSeekAdapter implements ProviderAdapter {
           try {
             const parsed = JSON.parse(raw) as {
               v?: string | Array<{ type?: string; content?: string; references?: Array<{ title?: string; url?: string }> }>;
+              p?: string;
+              o?: string;
             };
+
+            if (parsed.p === 'response' || parsed.p === 'response/status' || (typeof parsed.v === 'string' && parsed.v.includes('RESPONSE'))) {
+              isResponseStarted = true;
+            }
 
             if (Array.isArray(parsed.v)) {
               for (const item of parsed.v) {
