@@ -11,16 +11,19 @@ function latestUserText(messages: ProviderRequest['messages']) {
 }
 
 function mapComponentId(model: string) {
-  if (model.includes('3.1')) return 'high_aes_general_v30l_art_fangzhou:general_v3.0_18b';
-  if (model.includes('3.0')) return 'high_aes_general_v30l:general_v3.0_18b';
-  if (model.includes('4.7')) return 'high_aes_general_v43';
-  if (model.includes('4.6')) return 'high_aes_general_v42';
-  if (model.includes('4.5')) return 'high_aes_general_v40l';
-  if (model.includes('4.1')) return 'high_aes_general_v41';
-  if (model.includes('4.0')) return 'high_aes_general_v40';
-  if (model.includes('2.0')) return 'high_aes_general_v20_L:general_v2.0_L';
-  if (model.includes('video') || model.includes('seedance')) return 'video_seedance_v25l';
-  return 'high_aes_general_v50';
+  const m = model.toLowerCase();
+  if (m.includes('5.0') && (m.includes('pro') || m.includes('large'))) return 'high_aes_general_v50p_large';
+  if (m.includes('5.0')) return 'high_aes_general_v50';
+  if (m.includes('4.7')) return 'high_aes_general_v43';
+  if (m.includes('4.6')) return 'high_aes_general_v42';
+  if (m.includes('4.5')) return 'high_aes_general_v40l';
+  if (m.includes('4.1')) return 'high_aes_general_v41';
+  if (m.includes('4.0')) return 'high_aes_general_v40';
+  if (m.includes('3.1')) return 'high_aes_general_v30l_art_fangzhou:general_v3.0_18b';
+  if (m.includes('3.0')) return 'high_aes_general_v30l:general_v3.0_18b';
+  if (m.includes('2.0')) return 'high_aes_general_v20_L:general_v2.0_L';
+  if (m.includes('video') || m.includes('seedance')) return 'video_seedance_v25l';
+  return 'high_aes_general_v30l_art_fangzhou:general_v3.0_18b';
 }
 
 function mapRatioNumber(sizeStr = '1024x1024') {
