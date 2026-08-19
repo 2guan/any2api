@@ -83,7 +83,7 @@ export class JimengAdapter implements ProviderAdapter {
   }
 
   private async generateImageDirect(prompt: string, tokenInput: string, model: string): Promise<string[]> {
-    const resolutions = ['2k', '1k'];
+    const resolutions = ['1k', '2k'];
     let lastErr: Error | null = null;
     for (const resQuality of resolutions) {
       try {
@@ -105,7 +105,7 @@ export class JimengAdapter implements ProviderAdapter {
     return [];
   }
 
-  private async sendZhizinanDirectRequest(prompt: string, tokenInput: string, model: string, resolutionQuality = '2k'): Promise<string[]> {
+  private async sendZhizinanDirectRequest(prompt: string, tokenInput: string, model: string, resolutionQuality = '1k'): Promise<string[]> {
     const isFullCookie = tokenInput.includes('=');
     const token = isFullCookie ? (tokenInput.match(/sessionid=([^;]+)/)?.[1] ?? tokenInput) : tokenInput;
 
@@ -153,7 +153,7 @@ export class JimengAdapter implements ProviderAdapter {
           resolutionType: resolutionQuality,
           abilityList: [],
           benefitCount: benefitCountVal,
-          reportParams: { enterSource: 'generate', vipSource: 'generate', extraVipFunctionKey: `${modelReqKey}-${resolutionQuality}`, useVipFunctionDetailsReporterHoc: true }
+          reportParams: { enterSource: 'generate' }
         }]),
         generateId: submitId
       }),
