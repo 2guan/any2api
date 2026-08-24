@@ -340,9 +340,218 @@ function AccountPoolPage({ accounts, refresh }: { accounts: Account[]; refresh: 
 }
 
 
-function GuidePage() {
-  const [provider, setProvider] = useState('chatgpt'); const guide = guideFor(provider);
-  return <section className="module-page guide-page"><div className="section-title"><div><Text className="eyebrow">授权与排障</Text><h1>使用指南</h1><p>仅录入你本人有权使用的账户凭据。凭据默认加密保存，日志与连接测试会自动脱敏。</p></div></div><div className="guide-layout"><aside className="guide-tabs" aria-label="渠道获取凭据指南">{providerGuides.map((item) => <button key={item.id} className={provider === item.id ? 'active' : ''} onClick={() => setProvider(item.id)}><span>{item.name}</span><ChevronRight20Regular /></button>)}</aside><Card className="guide-content"><div className="guide-heading"><div><Text className="eyebrow">{guide.name}</Text><h2>{guide.credentialSummary}</h2></div><a href={guide.loginUrl} target="_blank" rel="noreferrer">打开官方站点</a></div><div className="guide-meta"><span>授权材料：{guide.fields.map((field) => field.label).join(' / ')}</span><span>刷新策略：{guide.refreshPolicy}</span></div><ol className="guide-steps">{guide.steps.map((step) => <li key={step}>{step}</li>)}</ol><div className="guide-warning"><Warning24Regular /><span>{guide.warning}</span></div><div className="guide-footer"><strong>录入后下一步</strong><span>前往账号池保存凭据，随后在连接测试中选择该账号查看完整、脱敏的运行事件。</span></div></Card></div></section>;
+function GuidePage({ onPage }: { onPage?: (page: Page) => void }) {
+  const [provider, setProvider] = useState('chatgpt');
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const guide = guideFor(provider);
+
+  const copyToClipboard = async (text: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedCode(id);
+      window.setTimeout(() => setCopiedCode((current) => current === id ? null : current), 2000);
+    } catch {
+      // fallback
+    }
+  };
+
+  return (
+    <section className="module-page guide-page">
+      <div className="section-title">
+        <div>
+          <Text className="eyebrow">授权与排障指南</Text>
+          <h1>使用指南</h1>
+          <p>仅录入你本人有权使用的账户凭据。凭据加密保存，支持控制台一键提取长效 Token、后台自动续签与智能容灾。</p>
+        </div>
+      </div>
+
+      <div className="guide-layout">
+        <aside className="guide-tabs" aria-label="渠道获取凭据指南">
+          {providerGuides.map((item) => (
+            <button
+              key={item.id}
+              className={provider === item.id ? 'active' : ''}
+              onClick={() => setProvider(item.id)}
+            >
+              <div className="guide-tab-item">
+                <span className="provider-tile">{item.id.slice(0, 1).toUpperCase()}</span>
+                <span>{item.name}</span>
+              </div>
+              <ChevronRight20Regular />
+            </button>
+          ))}
+        </aside>
+
+        <Card className="guide-content">
+          {/* 1. 顶部渠道信息与官方链接 */}
+          <div className="guide-heading">
+            <div className="guide-heading-title-row">
+              <span className="provider-tile large">{guide.id.slice(0, 1).toUpperCase()}</span>
+              <div>
+                <Text className="eyebrow">{guide.name}</Text>
+                <h2>{guide.tagline}</h2>
+              </div>
+            </div>
+            <a href={guide.loginUrl} target="_blank" rel="noreferrer" className="guide-portal-link">
+              打开官方站点 ↗
+            </a>
+          </div>
+
+          {/* 2. 支持模型与特性标签 */}
+          <div className="guide-pills-row">
+            <div className="guide-pill-group">
+              <span className="guide-pill-label">支持模型：</span>
+              <div className="guide-pill-wrap">
+                {guide.supportedModels.map((m) => (
+                  <span key={m} className="guide-model-badge">{m}</span>
+                ))}
+              </div>
+            </div>
+            <div className="guide-pill-group">
+              <span className="guide-pill-label">能力矩阵：</span>
+              <div className="guide-pill-wrap">
+                {guide.features.map((f) => (
+                  <Badge key={f} appearance="tint" color="informative">{f}</Badge>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* 3. 一键提取脚本高亮卡片 */}
+          {guide.quickScript ? (
+            <div className="guide-quick-box">
+              <div className="guide-quick-header">
+                <div className="guide-quick-title">
+                  <span className="guide-quick-sparkle">⚡</span>
+                  <strong>{guide.quickScriptTitle || '控制台一键提取长效凭据'}</strong>
+                  <Badge appearance="tint" color="success">长效免维护</Badge>
+                </div>
+                <Button
+                  size="small"
+                  appearance="secondary"
+                  onClick={() => void copyToClipboard(guide.quickScript!, 'quickScript')}
+                >
+                  {copiedCode === 'quickScript' ? '✓ 已复制到剪贴板' : '复制提取脚本'}
+                </Button>
+              </div>
+              <p className="guide-quick-desc">
+                在已登录的官方网页端按 <code>F12</code> 切换至「控制台 / Console」，粘贴下方单行代码并回车，即可直接取出长期凭据：
+              </p>
+              <div className="guide-code-snippet">
+                <code>{guide.quickScript}</code>
+              </div>
+            </div>
+          ) : null}
+
+          {/* 4. 自动续签与后台常驻刷新说明 */}
+          <div className="guide-policy-banner">
+            <div className="guide-policy-head">
+              <strong>🔄 令牌生命周期与后台自动续签机制</strong>
+              <Badge appearance="tint" color="success">后台守护任务运行中</Badge>
+            </div>
+            <p>{guide.refreshPolicy}</p>
+          </div>
+
+          {/* 5. 分步提取指南 */}
+          <div className="guide-section">
+            <h3>📖 凭据提取详细分步指南</h3>
+            <div className="guide-methods-list">
+              {guide.methods.map((method, idx) => (
+                <div key={method.title} className="guide-method-card">
+                  <div className="guide-method-head">
+                    <div className="guide-method-title">
+                      <span className="guide-step-number">{idx + 1}</span>
+                      <strong>{method.title}</strong>
+                    </div>
+                    {method.badge ? <Badge appearance="tint" color="success">{method.badge}</Badge> : null}
+                  </div>
+                  <p className="guide-method-desc">{method.desc}</p>
+                  {method.code ? (
+                    <div className="guide-method-code-box">
+                      <code>{method.code}</code>
+                      <Button
+                        size="small"
+                        appearance="subtle"
+                        onClick={() => void copyToClipboard(method.code!, `method_${idx}`)}
+                      >
+                        {copiedCode === `method_${idx}` ? '✓ 已复制' : '复制代码'}
+                      </Button>
+                    </div>
+                  ) : null}
+                  <ol className="guide-method-steps">
+                    {method.steps.map((st) => (
+                      <li key={st}>{st}</li>
+                    ))}
+                  </ol>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 6. 账号池表单字段对应表 */}
+          <div className="guide-section">
+            <h3>📋 账号池表单字段对应说明</h3>
+            <div className="guide-fields-grid">
+              {guide.fields.map((f) => (
+                <div key={f.key} className={`guide-field-item ${f.preferred ? 'preferred' : ''}`}>
+                  <div className="guide-field-head">
+                    <code>{f.key}</code>
+                    <strong>{f.label}</strong>
+                    {f.preferred ? <Badge appearance="tint" color="success">推荐录入</Badge> : null}
+                  </div>
+                  <p>{f.hint}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 7. 常见排障与 FAQ */}
+          {guide.faqs && guide.faqs.length > 0 ? (
+            <div className="guide-section">
+              <h3>💡 常见排障与答疑 (FAQ)</h3>
+              <div className="guide-faqs-grid">
+                {guide.faqs.map((faq) => (
+                  <div key={faq.question} className="guide-faq-card">
+                    <strong>❓ {faq.question}</strong>
+                    <p>{faq.answer}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {/* 8. 安全避坑警告 */}
+          <div className="guide-warning">
+            <Warning24Regular />
+            <div>
+              <strong>⚠️ 安全避坑须知：</strong>
+              <span>{guide.warning}</span>
+            </div>
+          </div>
+
+          {/* 9. 下一步操作 */}
+          <div className="guide-action-bar">
+            <div>
+              <strong>🚀 已经提取好凭据？</strong>
+              <span>前往「账号池」加密保存凭据，并在「连接测试」中选择该渠道的模型进行全链路真实验证。</span>
+            </div>
+            <div className="guide-action-buttons">
+              {onPage ? (
+                <>
+                  <Button appearance="secondary" onClick={() => onPage('test')}>
+                    前往连接测试
+                  </Button>
+                  <Button appearance="primary" onClick={() => onPage('accounts')}>
+                    立即录入账号池
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </Card>
+      </div>
+    </section>
+  );
 }
 
 function KeysPage() {
@@ -2083,7 +2292,7 @@ export function App() {
     if (page === 'analytics') return <AnalyticsPage />;
     if (page === 'logs') return <LiveLogsPage logs={logs} refresh={() => void load()} />;
     if (page === 'images') return <ImageLogsPage />;
-    return <GuidePage />;
+    return <GuidePage onPage={navigate} />;
   }, [page, dashboard, logs, accounts, models, navigate]);
 
   if (authenticated === null) return <div className="boot"><Spinner label="正在加载控制台…" /></div>;
