@@ -42,21 +42,21 @@ export const providerGuides: ProviderGuide[] = [
     id: 'kimi',
     name: 'Kimi (月之暗面)',
     loginUrl: 'https://kimi.moonshot.cn',
-    credentialSummary: 'Authorization Token（访问令牌）或 Refresh Token 均可。网页端 F12 即可直接复制。',
-    refreshPolicy: '若填入 Refresh Token 系统会自动静默续期；若填入 Authorization Token 则按令牌有效期自动调度。',
+    credentialSummary: '强烈推荐 Refresh Token（长达数月有效），系统全自动静默续签；亦支持 Authorization Token（临时 15 分钟）。',
+    refreshPolicy: '只要填入 Refresh Token 或完整 Cookie，系统后台定时与请求前均会自动静默换发新令牌并持久化保存，彻底无需频繁手动更新。',
     fields: [
-      { key: 'token', label: 'Authorization Token / 访问令牌', kind: 'password', hint: '推荐。在 Kimi 网页按 F12，从网络面板中复制 Authorization 请求头的 eyJ... 字符串。', preferred: true },
-      { key: 'refresh_token', label: 'Refresh Token', kind: 'password', hint: '可选。控制台执行 localStorage.getItem(\'refresh_token\') 提取。' },
+      { key: 'refresh_token', label: 'Refresh Token / 刷新令牌 (长达数月有效，强烈推荐)', kind: 'password', hint: '强烈推荐。控制台执行 localStorage.getItem(\'refresh_token\') 一键获取，实现长期免维护自动续签。', preferred: true },
+      { key: 'token', label: 'Authorization Token / 访问令牌 (临时 15 分钟)', kind: 'password', hint: '可选。在 Kimi 网页按 F12 从请求头中复制（仅 15 分钟有效，建议优先录入 Refresh Token）。' },
       { key: 'session_id', label: '会话 ID', kind: 'password', hint: '可选，用于保持网页会话绑定。' }
     ],
     steps: [
       '在浏览器中登录你自己的 Kimi 网页版（https://kimi.moonshot.cn）。',
-      '按 F12 打开开发者工具，切换到「网络 / Network」标签页。',
-      '在 Kimi 页面发送一条消息或刷新网页，在网络请求列表中点击任意 api 请求（如 /api/chat）。',
-      '在右侧「标头 / Headers」中找到「Authorization」，复制其后以 eyJ 开头的完整 Token（带或不带 Bearer 均可）。',
-      '将复制的 Token 粘贴到账号池中保存即可！亦可在「控制台 / Console」输入 localStorage.getItem(\'token\') 提取。'
+      '【推荐做法】按 F12 打开开发者工具，切换到「控制台 / Console」标签页。',
+      '粘贴执行代码：localStorage.getItem(\'refresh_token\') || document.cookie.match(/k_refresh_token=([^;]+)/)?.[1] 并回车。',
+      '复制输出的 Refresh Token 字符串，粘贴至账号池的「Refresh Token」字段并保存。系统将永久自动续签！',
+      '【临时测试】亦可在「网络 / Network」请求标头中复制 Authorization（但仅 15 分钟有效，建议优先录入 Refresh Token）。'
     ],
-    warning: '提取 Token 后切勿在网页端点击“退出登录”，否则服务端会立即注销该 Token。关闭网页标签页即可。'
+    warning: '提取 Token 后切勿在网页端点击“退出登录”，否则服务端会注销该 Token。关闭网页标签页即可。'
   },
   {
     id: 'deepseek',
@@ -82,21 +82,21 @@ export const providerGuides: ProviderGuide[] = [
     id: 'glm',
     name: '智谱 GLM',
     loginUrl: 'https://chatglm.cn',
-    credentialSummary: 'Authorization Token 为主，支持同时录入 Refresh Token 实现自动续期。',
-    refreshPolicy: '同时配置 Refresh Token 时系统会在 JWT 临期前自动调用智谱后台续签并保存至数据库。',
+    credentialSummary: '强烈推荐 Refresh Token（180 天长效有效），系统全自动静默续签；亦支持 Access Token（2 小时有效）。',
+    refreshPolicy: '只要填入 Refresh Token 或包含 chatglm_refresh_token 的 Cookie，系统后台定时与请求前均会自动调用智谱后台续签并存入数据库，180 天免维护。',
     fields: [
-      { key: 'access_token', label: 'Authorization Token / 访问令牌', kind: 'password', hint: '推荐。在智谱网页按 F12，从网络面板中复制 Authorization 请求头的 eyJ... 字符串（Access Token）。', preferred: true },
-      { key: 'refresh_token', label: 'Refresh Token / 刷新令牌', kind: 'password', hint: '可选。控制台执行 localStorage.getItem(\'chatglm_refresh_token\') 提取。' },
+      { key: 'refresh_token', label: 'Refresh Token / 刷新令牌 (180 天有效，强烈推荐)', kind: 'password', hint: '强烈推荐。控制台执行 localStorage.getItem(\'chatglm_refresh_token\') 一键获取，实现 180 天免维护自动续签。', preferred: true },
+      { key: 'access_token', label: 'Authorization Token / 访问令牌 (2 小时有效)', kind: 'password', hint: '可选。在智谱网页按 F12 从请求头复制（仅 2 小时有效）。' },
       { key: 'session_id', label: '会话 ID', kind: 'password', hint: '可选。' }
     ],
     steps: [
       '在浏览器中登录你自己的智谱清言网页版（https://chatglm.cn）。',
-      '按 F12 打开开发者工具，切换到「网络 / Network」标签页。',
-      '在智谱清言页面发送一条消息或刷新页面，在网络请求中点击任意 api 请求（如 /conversation/recent_list）。',
-      '在右侧「标头 / Headers」中复制 Authorization: Bearer 后以 eyJ 开头的 Access Token（带或不带 Bearer 均可）。',
-      '亦可在「控制台 / Console」执行 localStorage.getItem(\'chatglm_token\') 提取。粘贴至账号池保存即可！'
+      '【推荐做法】按 F12 打开开发者工具，切换到「控制台 / Console」标签页。',
+      '粘贴执行代码：localStorage.getItem(\'chatglm_refresh_token\') || document.cookie.match(/chatglm_refresh_token=([^;]+)/)?.[1] 并回车。',
+      '复制输出的 Refresh Token 字符串，粘贴至账号池的「Refresh Token」字段并保存。系统将在后台永久自动续签（180 天有效）！',
+      '【临时测试】亦可在「网络 / Network」中复制 Authorization 标头（但仅 2 小时有效）。'
     ],
-    warning: '请勿将 Refresh Token 填入 Authorization Token 字段。提取后直接关闭网页，切勿点击“退出登录”。'
+    warning: '提取后直接关闭网页，切勿在浏览器中点击“退出登录”按钮。'
   },
   {
     id: 'qwen',

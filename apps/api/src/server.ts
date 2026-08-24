@@ -24,6 +24,7 @@ import { registerMessagesRoutes } from './routes/messages.js';
 import { registerEditableFilesRoutes } from './routes/editable_files.js';
 import { registerOAuthRoutes } from './routes/oauth.js';
 import { estimateTokens } from './tokens.js';
+import { startTokenRefresher, stopTokenRefresher } from './services/token-refresher.js';
 
 seedWebDefaults();
 
@@ -1006,4 +1007,9 @@ if (effectiveAdminDist) {
   });
 }
 
+app.addHook('onClose', async () => {
+  stopTokenRefresher();
+});
+
+startTokenRefresher();
 await app.listen({ host: config.host, port: config.port });

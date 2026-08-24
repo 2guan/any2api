@@ -2,7 +2,7 @@ import { credentialsFor, saveCredentials } from '../credentials.js';
 import type { Account } from '../accounts.js';
 import type { ProviderAdapter, ProviderEvent, ProviderRequest } from './types.js';
 
-type TokenState = { accessToken: string; expiresAt: number };
+type TokenState = { accessToken: string; refreshToken?: string; expiresAt: number };
 
 function parseJWTPayload(jwtToken: string): Record<string, unknown> | null {
   if (!jwtToken || typeof jwtToken !== 'string' || !jwtToken.startsWith('eyJ')) return null;
@@ -15,6 +15,29 @@ function parseJWTPayload(jwtToken: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function isJWTExpired(jwtToken: string, bufferMs = 30_000): boolean {
+  const payload = parseJWTPayload(jwtToken);
+  if (!payload || typeof payload.exp !== 'number') return false;
+  const expMs = payload.exp < 10000000000 ? payload.exp * 1000 : payload.exp;
+  return Date.now() >= expMs - bufferMs;
+}
+
+function extractTokenValue(raw: string | undefined): string {
+  if (!raw || typeof raw !== 'string') return '';
+  let token = raw.trim();
+  if (token.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(token) as { refresh_token?: string; access_token?: string; token?: string };
+      token = parsed.refresh_token || parsed.access_token || parsed.token || token;
+    } catch {}
+  }
+  if (token.includes('=')) {
+    const match = token.match(/(?:refresh_token|k_refresh_token|access_token|k_access_token|token)=([^;]+)/i);
+    if (match && match[1]) token = match[1].trim();
+  }
+  return token.replace(/^Bearer\s+/i, '').replace(/^"|"$/g, '').trim();
 }
 
 function textOf(content: unknown) {
@@ -38,17 +61,151 @@ export class KimiAdapter implements ProviderAdapter {
   readonly provider = 'kimi';
   private tokens = new Map<string, TokenState>();
 
+  private resolveCredentialsTokens(credentials: Record<string, string>) {
+    let accessToken = extractTokenValue(credentials.access_token || credentials.token);
+    let refreshToken = extractTokenValue(credentials.refresh_token);
+
+    // If user pasted full cookie string in any field
+    for (const val of Object.values(credentials)) {
+      if (typeof val === 'string' && val.includes('=')) {
+        const matchRefresh = val.match(/(?:k_refresh_token|refresh_token)=([^;]+)/i);
+        if (matchRefresh && matchRefresh[1]) refreshToken = matchRefresh[1].trim();
+        const matchAccess = val.match(/(?:k_access_token|access_token)=([^;]+)/i);
+        if (matchAccess && matchAccess[1]) accessToken = matchAccess[1].trim();
+      }
+    }
+
+    // If the token in accessToken is actually a refresh token (typ: 'refresh')
+    const accessPayload = parseJWTPayload(accessToken);
+    if (accessPayload && (accessPayload as { typ?: string }).typ === 'refresh') {
+      if (!refreshToken) refreshToken = accessToken;
+      accessToken = '';
+    }
+
+    // If the token in refreshToken is actually an access token (typ: 'access')
+    const refreshPayload = parseJWTPayload(refreshToken);
+    if (refreshPayload && (refreshPayload as { typ?: string }).typ === 'access') {
+      if (!accessToken) accessToken = refreshToken;
+      refreshToken = '';
+    }
+
+    return { accessToken, refreshToken };
+  }
+
+  async refreshAccessToken(account: Account, customRefreshToken?: string): Promise<string> {
+    const credentials = credentialsFor(account.id);
+    const { refreshToken: resolvedRefresh } = this.resolveCredentialsTokens(credentials);
+    const refreshToken = customRefreshToken || resolvedRefresh;
+
+    if (!refreshToken) {
+      throw new Error('未配置 Kimi Refresh Token，无法自动续签。请在【账号池】录入 Refresh Token（有效期长达数月）');
+    }
+
+    const response = await fetch('https://kimi.moonshot.cn/api/auth/token/refresh', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${refreshToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
+      },
+      body: '{}'
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Kimi Refresh Token 续签失败 (${response.status}): ${errText.slice(0, 150)}`);
+    }
+
+    const data = await response.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
+    if (!data.access_token) {
+      throw new Error('Kimi 未能返回有效的 Access Token');
+    }
+
+    const newAccessToken = data.access_token;
+    const newRefreshToken = data.refresh_token || refreshToken;
+    const expiresIn = Math.max(60, data.expires_in ?? 900);
+    const expiresAt = Date.now() + expiresIn * 1000 - 60_000;
+
+    // 持久化存储到数据库
+    saveCredentials(account.id, {
+      ...credentials,
+      token: newAccessToken,
+      access_token: newAccessToken,
+      refresh_token: newRefreshToken
+    });
+
+    // 更新内存缓存
+    this.tokens.set(account.id, {
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+      expiresAt
+    });
+
+    return newAccessToken;
+  }
+
+  async accessToken(account: Account, forceRefresh = false): Promise<string> {
+    const cached = this.tokens.get(account.id);
+    if (!forceRefresh && cached && cached.accessToken && Date.now() < cached.expiresAt) {
+      return cached.accessToken;
+    }
+
+    const credentials = credentialsFor(account.id);
+    const { accessToken, refreshToken } = this.resolveCredentialsTokens(credentials);
+
+    // 1. 如果已有有效的 Access Token 且未强制刷新
+    if (!forceRefresh && accessToken && !isJWTExpired(accessToken, 60_000)) {
+      const payload = parseJWTPayload(accessToken);
+      const expSec = (payload?.exp as number) || (Math.floor(Date.now() / 1000) + 900);
+      const expiresAt = expSec < 10000000000 ? expSec * 1000 - 60_000 : expSec - 60_000;
+
+      this.tokens.set(account.id, {
+        accessToken,
+        refreshToken,
+        expiresAt
+      });
+      return accessToken;
+    }
+
+    // 2. 如果配置了 Refresh Token，调用接口自动刷新
+    if (refreshToken) {
+      try {
+        return await this.refreshAccessToken(account, refreshToken);
+      } catch (err) {
+        if (accessToken && !isJWTExpired(accessToken, 5_000)) {
+          return accessToken;
+        }
+        throw err;
+      }
+    }
+
+    // 3. 只有 Access Token 且已过期
+    if (accessToken) {
+      if (isJWTExpired(accessToken)) {
+        throw new Error('Kimi Authorization Token 已过期（通常仅 15 分钟有效）。强烈建议在【账号池】录入 Refresh Token（有效期长达数月），系统将永久自动续签！可在网页控制台执行：localStorage.getItem("refresh_token") 获取。');
+      }
+      return accessToken;
+    }
+
+    throw new Error('未配置 Kimi 凭据，请在【使用指南】中查看如何复制 Refresh Token 并录入账号池');
+  }
+
   async testConnection(account: Account) {
     try {
+      const credentials = credentialsFor(account.id);
+      const { refreshToken } = this.resolveCredentialsTokens(credentials);
       await this.accessToken(account);
-      return { ok: true, detail: 'Kimi Token 凭据校验成功' };
+      const detail = refreshToken
+        ? 'Kimi 凭据校验成功（已启用 Refresh Token 长期自动静默续签）'
+        : 'Kimi Access Token 校验成功（建议在账号池填入 Refresh Token 以实现长效免维护自动续签）';
+      return { ok: true, detail };
     } catch (error) {
       return { ok: false, detail: error instanceof Error ? error.message : 'Kimi 凭据校验失败' };
     }
   }
 
-  async refreshCredentials(account: Account) {
-    await this.accessToken(account);
+  async refreshCredentials(account: Account): Promise<void> {
+    await this.accessToken(account, true);
   }
 
   async *discoverModels(_account: Account) {
@@ -56,7 +213,7 @@ export class KimiAdapter implements ProviderAdapter {
   }
 
   async *streamTurn(request: ProviderRequest, account: Account): AsyncIterable<ProviderEvent> {
-    const token = await this.accessToken(account);
+    let token = await this.accessToken(account);
     const credentials = credentialsFor(account.id);
     let chatId = credentials.kimi_chat_id;
 
@@ -107,7 +264,6 @@ export class KimiAdapter implements ProviderAdapter {
     let response: Response | null = null;
     let attempts = 0;
     const maxAttempts = 3;
-    let isDegraded = false;
 
     while (attempts < maxAttempts) {
       attempts++;
@@ -121,6 +277,14 @@ export class KimiAdapter implements ProviderAdapter {
           },
           body: JSON.stringify(payload)
         });
+
+        // 鉴权失败 / Token 过期：触发自动续签并重试
+        if (!response.ok && (response.status === 401 || response.status === 403) && attempts < maxAttempts) {
+          try {
+            token = await this.accessToken(account, true);
+            continue;
+          } catch {}
+        }
 
         if (response.ok) break;
 
@@ -156,7 +320,6 @@ export class KimiAdapter implements ProviderAdapter {
           payload.use_k1 = false;
           delete payload.reasoning_effort;
           delete payload.scenario;
-          isDegraded = true;
           await new Promise((r) => setTimeout(r, 800));
           continue;
         }
@@ -224,78 +387,5 @@ export class KimiAdapter implements ProviderAdapter {
       }
     }
     yield { type: 'completed' };
-  }
-
-  private async accessToken(account: Account): Promise<string> {
-    const cached = this.tokens.get(account.id);
-    if (cached && cached.expiresAt > Date.now()) return cached.accessToken;
-
-    const credentials = credentialsFor(account.id);
-    let rawToken = (credentials.token ?? credentials.access_token ?? credentials.refresh_token ?? credentials.cookie ?? '').trim();
-
-    if (rawToken.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(rawToken) as { refresh_token?: string; access_token?: string; token?: string };
-        if (parsed.refresh_token) rawToken = parsed.refresh_token;
-        else if (parsed.access_token) rawToken = parsed.access_token;
-        else if (parsed.token) rawToken = parsed.token;
-      } catch {}
-    }
-
-    if (rawToken.includes('=')) {
-      const match = rawToken.match(/(?:refresh_token|k_refresh_token|access_token|k_access_token|token)=([^;]+)/i);
-      if (match && match[1]) rawToken = match[1].trim();
-    }
-
-    const cleanToken = rawToken.replace(/^Bearer\s+/i, '').trim();
-    if (!cleanToken) {
-      throw new Error('未配置 Kimi 凭据，请在【使用指南】中查看如何复制 Authorization Token 并录入账号池');
-    }
-
-    // 1. 尝试使用该 Token 换取新令牌（如果该 Token 是 Refresh Token）
-    try {
-      const response = await fetch('https://kimi.moonshot.cn/api/auth/token/refresh', {
-        headers: {
-          authorization: `Bearer ${cleanToken}`,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
-        }
-      });
-
-      if (response.ok) {
-        const data = await response.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
-        if (data.access_token) {
-          if (data.refresh_token && data.refresh_token !== cleanToken) {
-            saveCredentials(account.id, { ...credentials, refresh_token: data.refresh_token, token: data.refresh_token });
-          }
-          const accessToken = data.access_token;
-          this.tokens.set(account.id, {
-            accessToken,
-            expiresAt: Date.now() + Math.max(60, data.expires_in ?? 900) * 1000 - 30_000
-          });
-          return accessToken;
-        }
-      }
-    } catch {}
-
-    // 2. 如果刷新失败，检查该 Token 是否本身就是有效的 Access Token (JWT)
-    const payload = parseJWTPayload(cleanToken);
-    if (payload && typeof payload.exp === 'number') {
-      const expMs = payload.exp < 10000000000 ? payload.exp * 1000 : payload.exp;
-      if (Date.now() < expMs - 30_000) {
-        this.tokens.set(account.id, {
-          accessToken: cleanToken,
-          expiresAt: expMs - 30_000
-        });
-        return cleanToken;
-      }
-      throw new Error('Kimi Authorization Token 已过期，请在网页端 F12 重新复制最新的 Authorization 令牌');
-    }
-
-    // 3. 兜底直接使用该 Token
-    this.tokens.set(account.id, {
-      accessToken: cleanToken,
-      expiresAt: Date.now() + 600 * 1000
-    });
-    return cleanToken;
   }
 }
