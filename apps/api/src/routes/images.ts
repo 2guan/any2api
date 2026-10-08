@@ -9,6 +9,8 @@ const imageGenSchema = z.object({
   n: z.number().int().min(1).max(10).default(1),
   size: z.string().default('1024x1024'),
   response_format: z.enum(['url', 'b64_json']).default('url'),
+  image: z.string().optional(),
+  images: z.array(z.string()).optional()
 });
 
 export async function registerImageRoutes(app: FastifyInstance) {
@@ -18,7 +20,13 @@ export async function registerImageRoutes(app: FastifyInstance) {
     const input = imageGenSchema.parse(request.body);
 
     const imageUrls: string[] = [];
-    const messages = [{ role: 'user', content: input.prompt }];
+    let promptWithImg = input.prompt;
+    if (input.images && input.images.length > 0) {
+      promptWithImg = input.images.map(img => `[Init Image: ${img}]`).join('\n') + '\n' + promptWithImg;
+    } else if (input.image) {
+      promptWithImg = `[Init Image: ${input.image}]\n${promptWithImg}`;
+    }
+    const messages = [{ role: 'user', content: promptWithImg }];
 
     for await (const result of execute({ model: input.model, messages, stream: false, n: input.n, size: input.size }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
       if (result.item.type === 'image.created') {
@@ -47,10 +55,15 @@ export async function registerImageRoutes(app: FastifyInstance) {
   app.post('/v1/images/edits', async (request, reply) => {
     const actor = principal(request);
     if (!actor) throw Object.assign(new Error('Invalid API key'), { statusCode: 401 });
-    const input = imageGenSchema.extend({ image: z.string().optional() }).parse(request.body);
+    const input = imageGenSchema.parse(request.body);
 
     const imageUrls: string[] = [];
-    const promptWithImg = input.image ? `[Init Image: ${input.image}]\n${input.prompt}` : input.prompt;
+    let promptWithImg = input.prompt;
+    if (input.images && input.images.length > 0) {
+      promptWithImg = input.images.map(img => `[Init Image: ${img}]`).join('\n') + '\n' + promptWithImg;
+    } else if (input.image) {
+      promptWithImg = `[Init Image: ${input.image}]\n${promptWithImg}`;
+    }
     const messages = [{ role: 'user', content: promptWithImg }];
 
     for await (const result of execute({ model: input.model, messages, stream: false, n: input.n, size: input.size }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
