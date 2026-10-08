@@ -20,7 +20,7 @@ export async function registerImageRoutes(app: FastifyInstance) {
     const imageUrls: string[] = [];
     const messages = [{ role: 'user', content: input.prompt }];
 
-    for await (const result of execute({ model: input.model, messages, stream: false }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
+    for await (const result of execute({ model: input.model, messages, stream: false, n: input.n, size: input.size }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
       if (result.item.type === 'image.created') {
         imageUrls.push(result.item.url);
       }
@@ -53,7 +53,7 @@ export async function registerImageRoutes(app: FastifyInstance) {
     const promptWithImg = input.image ? `[Init Image: ${input.image}]\n${input.prompt}` : input.prompt;
     const messages = [{ role: 'user', content: promptWithImg }];
 
-    for await (const result of execute({ model: input.model, messages, stream: false }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
+    for await (const result of execute({ model: input.model, messages, stream: false, n: input.n, size: input.size }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
       if (result.item.type === 'image.created') {
         imageUrls.push(result.item.url);
       }

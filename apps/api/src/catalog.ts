@@ -56,11 +56,19 @@ export const webDefaults: readonly WebDefault[] = [
   { provider: 'qwen', upstreamId: 'Qwen-Image', publicModel: 'qwen-image', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
   { provider: 'qwen', upstreamId: 'Wan2.6-T2I', publicModel: 'wan2.6-t2i', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
 
-  // Jimeng / 即梦
+  // Jimeng / 即梦 / Seedream
+  { provider: 'jimeng', upstreamId: 'Seedream 4.7', publicModel: 'seedream-4.7', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
+  { provider: 'jimeng', upstreamId: 'Seedream 4.7 (Alias)', publicModel: 'seedreem-4.7', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
+  { provider: 'jimeng', upstreamId: '图片 4.7', publicModel: 'jimeng-4.7', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
+  { provider: 'jimeng', upstreamId: 'Seedream 3.1', publicModel: 'seedream-3.1', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
+  { provider: 'jimeng', upstreamId: 'Seedream 3.1 (Alias)', publicModel: 'seedreem-3.1', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
   { provider: 'jimeng', upstreamId: '文生图 3.1', publicModel: 'jimeng-3.1', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
   { provider: 'jimeng', upstreamId: '文生图 3.0', publicModel: 'jimeng-3.0', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
+  { provider: 'jimeng', upstreamId: 'Seedream 3.0', publicModel: 'seedream-3.0', capabilities: { input: ['text'], output: ['image'], streaming: false, imageGeneration: true } },
   { provider: 'jimeng', upstreamId: '图片 5.0 Pro', publicModel: 'jimeng-image-5.0-pro', capabilities: { input: ['text', 'image'], output: ['image'], streaming: false, imageGeneration: true } },
+  { provider: 'jimeng', upstreamId: 'Seedream 5.0 Pro', publicModel: 'seedream-5.0-pro', capabilities: { input: ['text', 'image'], output: ['image'], streaming: false, imageGeneration: true } },
   { provider: 'jimeng', upstreamId: '图片 5.0 Lite', publicModel: 'jimeng-image-5.0-lite', capabilities: { input: ['text', 'image'], output: ['image'], streaming: false, imageGeneration: true } },
+  { provider: 'jimeng', upstreamId: 'Seedream 5.0 Lite', publicModel: 'seedream-5.0-lite', capabilities: { input: ['text', 'image'], output: ['image'], streaming: false, imageGeneration: true } },
   { provider: 'jimeng', upstreamId: 'Seedance 2.0', publicModel: 'jimeng-seedance-2.0', capabilities: { input: ['text', 'image'], output: ['video'], streaming: false } },
   { provider: 'jimeng', upstreamId: 'Seedance 2.0 Fast', publicModel: 'jimeng-seedance-2.0-fast', capabilities: { input: ['text', 'image'], output: ['video'], streaming: false } }
 ];

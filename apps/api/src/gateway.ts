@@ -4,7 +4,7 @@ import { beginRequest, event, finishRequest } from './events.js';
 import { providers } from './providers/registry.js';
 import type { ProviderEvent } from './providers/types.js';
 
-export type GatewayRequest = { model: string; messages: Array<{ role: string; content: unknown }>; stream: boolean; reasoning?: { effort?: string }; webSearch?: boolean };
+export type GatewayRequest = { model: string; messages: Array<{ role: string; content: unknown }>; stream: boolean; reasoning?: { effort?: string }; webSearch?: boolean; n?: number; size?: string };
 
 function route(model: string) {
   return db.prepare(`SELECT m.provider, m.upstream_id FROM routes r JOIN models m ON m.id = r.model_id

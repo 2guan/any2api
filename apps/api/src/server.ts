@@ -53,7 +53,9 @@ const chatRequest = z.object({
   stream: z.boolean().default(true),
   stream_options: z.object({ include_usage: z.boolean().optional() }).optional(),
   reasoning: z.object({ effort: z.string().optional() }).optional(),
-  web_search: z.boolean().optional()
+  web_search: z.boolean().optional(),
+  n: z.number().int().optional(),
+  size: z.string().optional()
 });
 const accountInput = z.object({ provider: z.enum(['chatgpt', 'kimi', 'deepseek', 'glm', 'qwen', 'jimeng']), name: z.string().trim().min(1), credentials: z.record(z.string(), z.string()), priority: z.number().int().min(0).max(100).default(50) });
 
@@ -96,7 +98,9 @@ async function streamChat(request: z.infer<typeof chatRequest>, reply: FastifyRe
     messages: request.messages as Array<{ role: string; content: unknown }>,
     stream: true,
     reasoning: request.reasoning,
-    webSearch: request.web_search
+    webSearch: request.web_search,
+    n: request.n,
+    size: request.size
   }, options);
 
   let firstResult: IteratorResult<{ requestId: string; item: ProviderEvent }> | null = null;
@@ -182,7 +186,7 @@ app.post('/v1/chat/completions', async (request, reply) => {
   let content = '';
   let reasoningContent = '';
   let requestId = '';
-  for await (const result of execute({ model: input.model, messages: input.messages as Array<{ role: string; content: unknown }>, stream: false, reasoning: input.reasoning, webSearch: input.web_search }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
+  for await (const result of execute({ model: input.model, messages: input.messages as Array<{ role: string; content: unknown }>, stream: false, reasoning: input.reasoning, webSearch: input.web_search, n: input.n, size: input.size }, { kind: 'api', apiKeyId: actor.type === 'api_key' ? actor.id : undefined })) {
     requestId = result.requestId;
     if (result.item.type === 'message.delta') content += result.item.text;
     if (result.item.type === 'reasoning.summary.delta') reasoningContent += result.item.text;

@@ -8,7 +8,7 @@ export type ProviderEvent =
   | { type: 'image.created'; url: string }
   | { type: 'completed'; usage?: { inputTokens?: number; outputTokens?: number } };
 
-export type ProviderRequest = { model: string; messages: Array<{ role: string; content: unknown }>; stream: boolean; reasoning?: { effort?: string }; webSearch?: boolean };
+export type ProviderRequest = { model: string; messages: Array<{ role: string; content: unknown }>; stream: boolean; reasoning?: { effort?: string }; webSearch?: boolean; n?: number; size?: string };
 
 export interface ProviderAdapter {
   readonly provider: string;

@@ -319,13 +319,23 @@ export const providerGuides: ProviderGuide[] = [
   },
   {
     id: 'jimeng',
-    name: '即梦 AI (剪映灵感)',
-    tagline: '支持文生图 3.1、3.0、图片 5.0 Pro/Lite、4.0 等全系列多画质专业级 AI 图像创作',
+    name: '即梦 AI (Seedream / 剪映灵感)',
+    tagline: '支持 Seedream 4.7、Seedream 3.1、图片 5.0 Pro/Lite 等旗舰级多画质 AI 图像创作',
     loginUrl: 'https://jimeng.jianying.com',
     credentialSummary: 'sessionid（32 位核心凭据）或完整 Cookie。控制台一行代码即可提取。',
-    refreshPolicy: '系统默认优先使用 1K 标准分辨率（单次仅消耗 1 赠送/免费积分 gift_credit），完美支持每日签到免费积分与 VIP 会员积分，生成的画作自动转存至本地服务器持久化托管。',
-    supportedModels: ['文生图 3.1 (jimeng-3.1)', '文生图 3.0 (jimeng-3.0)', '图片 5.0 Pro', '图片 5.0 Lite', '图片 4.7', '图片 4.0'],
-    features: ['文生图 3.1 旗舰画质', '全系列模型 1K/2K 适配', '免费赠送积分优先抵扣', '单次批量生成 4 张高清图', '本地图片持久化托管'],
+    refreshPolicy: '系统默认优先使用 1K 标准分辨率（单次仅消耗 1 赠送/免费积分 gift_credit），完美支持每日签到免费积分与 VIP 会员积分。3.1 默认返回 4 张高清图，4.7 默认返回 1 张图，生成结果自动转存至本地服务器持久化托管。',
+    supportedModels: [
+      'seedream-4.7 (默认1张/快且省点)',
+      'seedreem-4.7 (别名兼容)',
+      'seedream-3.1 (默认4张图)',
+      'seedreem-3.1 (别名兼容)',
+      'jimeng-3.1',
+      'jimeng-4.7',
+      'seedream-5.0-pro',
+      'seedream-5.0-lite',
+      'seedream-3.0'
+    ],
+    features: ['Seedream 4.7 极速高精（默认1张）', 'Seedream 3.1 创意发散（默认4张）', '全系列 1K/2K 自动适配', '免费赠送积分优先抵扣', '本地图片持久化托管'],
     fields: [
       { key: 'sessionid', label: 'sessionid (核心会话凭据)', kind: 'password', hint: '强烈推荐。在即梦控制台执行脚本提取 32 位 sessionid 字符串。', preferred: true },
       { key: 'cookie', label: '完整 Cookie 字符串', kind: 'textarea', hint: '可选。控制台执行 document.cookie 复制全部内容。' },
@@ -358,7 +368,11 @@ export const providerGuides: ProviderGuide[] = [
     ],
     faqs: [
       {
-        question: '为什么使用文生图 3.1 时会优先消耗免费积分？',
+        question: 'Seedream 4.7 与 3.1 的生成张数和积分消耗规则是什么？',
+        answer: 'Any2API 已同步上游规范，将生成数量精准注入至 abilities.gen_option 中：调用 seedream-4.7 时默认生成并返回 1 张图片，仅消耗 1 点积分，极速响应；调用 seedream-3.1 时默认生成并返回 4 张图片；若在 API 中传入自定义参数 n，系统将按请求数量精准生成与返回。'
+      },
+      {
+        question: '为什么使用文生图时会优先消耗免费积分？',
         answer: '即梦官方为每个注册账号每天赠送免费积分（gift_credit）。Any2API 已优化了官方底层计费场景参数，默认优先采用 1K 标准分辨率（单次消耗 1 点免费积分），避免因强制调用 2K VIP 通道导致非会员账号报错 1006。'
       },
       {

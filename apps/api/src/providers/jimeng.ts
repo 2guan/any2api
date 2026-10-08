@@ -26,6 +26,17 @@ function mapComponentId(model: string) {
   return 'high_aes_general_v30l_art_fangzhou:general_v3.0_18b';
 }
 
+function defaultImageCountForModel(model: string, requestedN?: number): number {
+  if (typeof requestedN === 'number' && requestedN > 0) return requestedN;
+  const m = model.toLowerCase();
+  // 4.7 默认生成 1 张
+  if (m.includes('4.7')) return 1;
+  // 3.1 默认生成 4 张
+  if (m.includes('3.1')) return 4;
+  if (m.includes('3.0')) return 4;
+  return 1;
+}
+
 function mapRatioNumber(sizeStr = '1024x1024') {
   if (sizeStr === '16:9' || sizeStr.includes('1920x1080')) return 1;
   if (sizeStr === '9:16' || sizeStr.includes('1080x1920')) return 6;
@@ -72,7 +83,11 @@ export class JimengAdapter implements ProviderAdapter {
     const prompt = latestUserText(request.messages);
     if (!prompt) throw new Error('即梦 AI 需要绘图提示词');
 
-    const images = await this.generateImageDirect(prompt, rawToken, request.model || 'jimeng-3.1');
+    const model = request.model || 'seedream-4.7';
+    const targetCount = defaultImageCountForModel(model, request.n);
+    const size = request.size || '1024x1024';
+
+    const images = await this.generateImageDirect(prompt, rawToken, model, targetCount, size);
     if (images && images.length > 0) {
       for (const url of images) {
         const localUrl = await saveRemoteMedia(url, 'jimeng_img');
@@ -85,12 +100,18 @@ export class JimengAdapter implements ProviderAdapter {
     throw new Error('即梦 AI 生成任务超时或未返回可用图片结果');
   }
 
-  private async generateImageDirect(prompt: string, tokenInput: string, model: string): Promise<string[]> {
+  private async generateImageDirect(
+    prompt: string,
+    tokenInput: string,
+    model: string,
+    targetCount = 1,
+    size = '1024x1024'
+  ): Promise<string[]> {
     const resolutions = ['1k', '2k'];
     let lastErr: Error | null = null;
     for (const resQuality of resolutions) {
       try {
-        const urls = await this.sendZhizinanDirectRequest(prompt, tokenInput, model, resQuality);
+        const urls = await this.sendZhizinanDirectRequest(prompt, tokenInput, model, resQuality, targetCount, size);
         if (urls && urls.length > 0) return urls;
       } catch (err) {
         lastErr = err as Error;
@@ -108,7 +129,14 @@ export class JimengAdapter implements ProviderAdapter {
     return [];
   }
 
-  private async sendZhizinanDirectRequest(prompt: string, tokenInput: string, model: string, resolutionQuality = '1k'): Promise<string[]> {
+  private async sendZhizinanDirectRequest(
+    prompt: string,
+    tokenInput: string,
+    model: string,
+    resolutionQuality = '1k',
+    targetCount = 1,
+    size = '1024x1024'
+  ): Promise<string[]> {
     const isFullCookie = tokenInput.includes('=');
     const token = isFullCookie ? (tokenInput.match(/sessionid=([^;]+)/)?.[1] ?? tokenInput) : tokenInput;
 
@@ -140,14 +168,14 @@ export class JimengAdapter implements ProviderAdapter {
     const componentId = crypto.randomUUID();
     const submitId = crypto.randomUUID();
     const sideDim = resolutionQuality === '2k' ? 2048 : 1024;
-    const benefitCountVal = resolutionQuality === '2k' ? 3 : 1;
+    const benefitCountVal = targetCount;
 
     const requestData = {
       extend: { root_model: modelReqKey },
       submit_id: submitId,
       metrics_extra: JSON.stringify({
         promptSource: 'custom',
-        generateCount: 1,
+        generateCount: targetCount,
         enterFrom: 'click',
         sceneOptions: JSON.stringify([{
           type: 'image',
@@ -166,7 +194,7 @@ export class JimengAdapter implements ProviderAdapter {
         min_version: '3.0.2',
         min_features: [],
         is_from_tsn: true,
-        version: '3.3.20',
+        version: '3.0.2',
         main_component_id: componentId,
         component_list: [{
           type: 'image_base_component',
@@ -174,6 +202,7 @@ export class JimengAdapter implements ProviderAdapter {
           min_version: '3.0.2',
           generate_type: 'generate',
           aigc_mode: 'workbench',
+          gen_type: 1,
           abilities: {
             type: '',
             id: crypto.randomUUID(),
@@ -188,10 +217,17 @@ export class JimengAdapter implements ProviderAdapter {
                 negative_prompt: '',
                 seed: Math.floor(Math.random() * 100000000) + 2500000000,
                 sample_strength: 0.5,
-                image_ratio: mapRatioNumber('1024x1024'),
-                large_image_info: { type: '', id: crypto.randomUUID(), height: sideDim, width: sideDim, resolution_type: resolutionQuality }
+                image_ratio: mapRatioNumber(size),
+                large_image_info: { type: '', id: crypto.randomUUID(), height: sideDim, width: sideDim, resolution_type: resolutionQuality },
+                generate_type: 0
               },
               history_option: { type: '', id: crypto.randomUUID() }
+            },
+            gen_option: {
+              type: '',
+              id: crypto.randomUUID(),
+              gen_count: targetCount,
+              generate_all: false
             }
           }
         }]
@@ -221,7 +257,7 @@ export class JimengAdapter implements ProviderAdapter {
       const data = await res.json() as { ret?: string | number; errmsg?: string; data?: { history_id?: string }; aigc_data?: { history_record_id?: string } };
       if (data.ret === '0' || data.ret === 0) {
         const historyId = jimengHistoryId(data);
-        if (historyId) return await this.pollTaskHistory(historyId, cookieHeader);
+        if (historyId) return await this.pollTaskHistory(historyId, cookieHeader, targetCount);
       } else {
         throw new Error(`[即梦 API 错误]: ${data.errmsg ?? 'common error'} (错误码: ${data.ret})`);
       }
@@ -229,7 +265,7 @@ export class JimengAdapter implements ProviderAdapter {
     return [];
   }
 
-  private async pollTaskHistory(historyId: string, cookieHeader: string): Promise<string[]> {
+  private async pollTaskHistory(historyId: string, cookieHeader: string, expectedCount = 1): Promise<string[]> {
     const pollUrl = 'https://jimeng.jianying.com/mweb/v1/get_history_by_ids?aid=513695&device_platform=web&region=CN';
     const headers = { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Cookie': cookieHeader };
     const pollBody = {
@@ -245,7 +281,9 @@ export class JimengAdapter implements ProviderAdapter {
         if (res.ok) {
           const data = await res.json();
           const urls = imageUrlsFromJimengTaskHistory(data, historyId);
-          if (urls.length >= 4 || (urls.length > 0 && attempt >= 20)) return urls.slice(0, 4);
+          if (urls.length >= expectedCount || (urls.length > 0 && attempt >= 18)) {
+            return urls.slice(0, expectedCount);
+          }
         }
       } catch {
         /* Ignore transient error */
